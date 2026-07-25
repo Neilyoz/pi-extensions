@@ -8,8 +8,10 @@ A collection of small extensions for [Pi Coding Agent](https://pi.dev).
 |---------|-------------|
 | [`pi-ask-user`](./packages/pi-ask-user) | Collapsible ask-user tool — panel renders in the bottom editor slot (not a screen overlay), so the transcript stays visible and scrollable above it |
 | [`pi-context-include`](./packages/pi-context-include) | `@path` syntax for AGENTS.md — include files by reference |
+| [`pi-hashline-edit`](./packages/pi-hashline-edit) | Hashline-style file editing — line-anchored edits verified by content hash, replacing oldText/newText matching |
 | [`pi-provider-agnes`](./packages/pi-provider-agnes) | Agnes AI provider — token-billing + token-plan variants sharing the same text models |
 | [`pi-provider-sensenova`](./packages/pi-provider-sensenova) | SenseNova (商汤日日新) Token Plan provider — chat models via OpenAI-compatible API |
+| [`pi-provider-stepfun`](./packages/pi-provider-stepfun) | StepFun (阶跃星辰) provider — pay-as-you-go + Step Plan channels via OpenAI-compatible API |
 | [`pi-usage-block`](./packages/pi-usage-block) | Usage quota status block for powerline and pi-editor-shell |
 | [`pi-editor-shell`](./packages/pi-editor-shell) | Unified rounded-corner editor shell — embeds model, context, cache, git, and pinned extension status info in the editor border |
 | [`pi-scout`](./packages/pi-scout) <sup>†</sup> | Per-turn side agent — lazy skill injection, automatic model routing, and trivial-ack short-circuit (skips the side model on `好的`/`ok`/`はい`) |
