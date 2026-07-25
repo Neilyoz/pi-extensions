@@ -209,7 +209,19 @@ async function deepseekBalance(apiKey: string): Promise<BalanceInfo> {
   return { amount, currency };
 }
 
-/** OpenCode Go: GET /zen/go/v1/usage → rolling5h + weekly + monthly quota windows (dollars). */
+/**
+ * OpenCode Go: GET /zen/go/v1/usage → rolling5h + weekly + monthly quota windows (dollars).
+ *
+ * Dormant — NOT registered in {@link BUILTIN_PROVIDERS} because this endpoint
+ * doesn't exist on opencode.ai yet. The response shape is taken verbatim from
+ * the API proposed in anomalyco/opencode#31084 (still an open feature request;
+ * see also implementation attempt anomalyco/opencode#16513). Until it ships,
+ * every third-party tool scrapes the web dashboard via session cookies, since
+ * no JSON usage API is published.
+ *
+ * When the endpoint lands, re-enable the entry in {@link BUILTIN_PROVIDERS};
+ * the field names here already match the proposal, so this should work as-is.
+ */
 async function opencodeGoUsage(apiKey: string): Promise<QuotaWindow[]> {
   const data = await fetchJson("https://opencode.ai/zen/go/v1/usage", apiKey);
   const windows: QuotaWindow[] = [];
@@ -322,13 +334,15 @@ export const BUILTIN_PROVIDERS: BuiltinDef[] = [
       fetchBalance: () => deepseekBalance(apiKey),
     }),
   },
-  {
-    id: "opencode-go",
-    build: ({ apiKey }) => ({
-      kind: "quota", id: "opencode-go", name: "OpenCode Go", source: "api",
-      fetchUsage: () => opencodeGoUsage(apiKey),
-    }),
-  },
+  // OpenCode Go has no public usage API yet — see opencodeGoUsage above and
+  // anomalyco/opencode#31084. Re-enable once it ships.
+  // {
+  //   id: "opencode-go",
+  //   build: ({ apiKey }) => ({
+  //     kind: "quota", id: "opencode-go", name: "OpenCode Go", source: "api",
+  //     fetchUsage: () => opencodeGoUsage(apiKey),
+  //   }),
+  // },
   {
     id: "zai",
     build: ({ apiKey }) => ({

@@ -45,11 +45,12 @@ The following pi providers are supported out of the box — no extra plugin need
 | Together | quota % | `x-tokenlimit-*` response headers |
 | OpenRouter | balance $ | `GET openrouter.ai/api/v1/credits` |
 | DeepSeek | balance $ | `GET api.deepseek.com/user/balance` |
-| OpenCode Go | dollar quota % | `GET opencode.ai/zen/go/v1/usage` |
 | Z.AI | quota % | `GET api.z.ai/api/monitor/usage/quota/limit` |
 | Z.AI Coding CN | quota % | `GET open.bigmodel.cn/api/monitor/usage/quota/limit` |
 
 > **Not supported:** Google Gemini and Mistral don't surface response headers in pi's call path. Groq's rate-limit headers are undocumented/unstable, and Fireworks only exposes limit (no remaining/reset).
+>
+> **Pending:** OpenCode Go exposes no public usage API yet — the provider code is ready and dormant, waiting on [anomalyco/opencode#31084](https://github.com/anomalyco/opencode/issues/31084).
 
 ## Configuration
 
