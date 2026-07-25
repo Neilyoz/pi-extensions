@@ -77,39 +77,40 @@ src/foo.ts · 24 lines
 
 ### 4.2 edit 操作
 
-verb 用语义化英文（比 oh-my-pi 的 SWAP/DEL/INS 更自解释，与 pi 内置 edit 风格一致）：
+edit 工具接收结构化 JSON `edits` 数组（与 pi 原生风格一致，schema 强约束）。每个 op：
 
-| 操作 | 语法 | body | 含义 |
-|------|------|------|------|
-| 替换单行 | `replace 4#kLp:` | `+TEXT` | 替换第 4 行 |
-| 替换多行 | `replace 4#kLp..6#b2H:` | `+TEXT` | 替换 4–6 行（inclusive） |
-| 删除 | `delete 4#kLp` | 无 | 删第 4 行（支持 `4#kLp..6#b2H` 范围） |
-| 行后插 | `insert_after 3#mP0:` | `+TEXT` | 第 3 行后插入 |
-| 行前插 | `insert_before 3#mP0:` | `+TEXT` | 第 3 行前插入 |
-| 文件尾插 | `append:` | `+TEXT` | 追加到文件末尾 |
-| 文件头插 | `prepend:` | `+TEXT` | 插到文件开头 |
+| op | anchor | end | body | 含义 |
+|----|--------|-----|------|------|
+| `replace` | 必须 | 可选（range） | 必须 | 替换 anchor（..end）行 |
+| `delete` | 必须 | 可选 | 无 | 删 anchor（..end）行 |
+| `insert_after` | 必须 | — | 必须 | anchor 行后插入 |
+| `insert_before` | 必须 | — | 必须 | anchor 行前插入 |
+| `append` | — | — | 必须 | 追加到文件末尾 |
+| `prepend` | — | — | 必须 | 插到文件开头 |
 
-**body 规则**：每行 `+TEXT`；`+` 单独一行 = 空行；无 `-old`、无上下文行。要保留的行不写进任何操作。Markdown `- item` 写成 `+- item`。
+`anchor`/`end` = `{line, hash}`（行号 + read 输出的 hash）。`body` = string[]（新内容行）。
 
-**锚的双重校验**：`行号#hash` 中，行号给人读，hash 给机器校验。apply 时：
+> 放弃 oh-my-pi 的字符串 DSL——那是它整体抠 token 的妥协（boundary repair / 文件级 tag 等缺陷迫使它省 token），本设计更干净，不需要。schema 强约束让旧 oldText/newText 在 `op` discriminator 处直接被拒（可见失败，不静默降级）。
+
+**锚的双重校验**：行号给人读，hash 给机器校验。apply 时：
 1. hash 在文件中唯一存在且行号匹配 → 直接应用
-2. hash 唯一但行号不符（漂移）→ `relocate-by-hash` 中间件按 hash 重定位（默认开）
+2. hash 唯一但行号不符（漂移）→ relocate 中间件按 hash 重定位
 3. hash 不在文件 / 多处碰撞 → **拒绝**，报错引导重读
 
 ### 4.3 示例
 
+```jsonc
+{
+  "path": "src/foo.ts",
+  "edits": [
+    { "op": "replace", "anchor": { "line": 4, "hash": "kLp" }, "body": ["  return x + 1"] },
+    { "op": "insert_after", "anchor": { "line": 6, "hash": "b2H" }, "body": ["", "export const bar = foo"] },
+    { "op": "delete", "anchor": { "line": 2, "hash": "7Qk" } }
+  ]
+}
 ```
-replace 4#kLp:
-+  if (x < 0) throw new Error("neg")
 
-insert_after 6#b2H:
-+
-+export const bar = foo
-
-delete 2#7Qk..2#7Qk
-```
-
-path 在工具参数里，input 只含 ops（无需 `file:` 头）；多文件用多次 edit 调用。
+多文件用多次 edit 调用。
 
 ## 5. 核心库模块接口
 
