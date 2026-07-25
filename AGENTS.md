@@ -185,6 +185,23 @@ Or add to `~/.pi/agent/settings.json`:
 - **纯库自身 README**：Installation 使用 `npm install`，并明确说明它不是 standalone pi extension
 - **可选 extension 依赖**：不放进主安装命令，单独说明如何安装和启用
 
+### 语言规范：面向社区的内容必须英文
+
+本仓库是全英文开源项目。**面向社区/国际读者的产物必须英文**；仅本地/内部的产物可中文。
+
+**必须英文**：
+- 包 `README.md`（npm/GitHub 面向国际用户）
+- 源码注释（JSDoc、行内注释——开源协作、IDE 提示、未来贡献者）
+- 面向模型/用户的字符串：`description`、`promptSnippet`、`promptGuidelines`、错误信息、`package.json` 的 `description`、测试名（`test("...")` 描述）
+
+**可中文**（本地/内部产物）：
+- commit message（仓库历史惯例为中文）
+- `plans/` 设计文档（内部设计记录）
+- `AGENTS.md` 及 agent 指令、与用户的对话
+
+判断标准：**它会出现在 npm/GitHub 被国际读者看到，或被读进模型 system prompt → 必须英文。**
+
+
 ### Provider 开发
 
 写新的 pi provider（`pi-provider-xxx`）时，遵循 PROVIDER.md 的验证方法论——不盲写配置，每个 compat 维度必须实测确认。
