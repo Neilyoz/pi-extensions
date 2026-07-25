@@ -68,14 +68,12 @@ export default function registerModelRolesExtension(pi: ExtensionAPI): void {
       const shown = expanded ? models : models.slice(0, COLLAPSED_PREVIEW);
       const omitted = count - shown.length;
 
-      let text = theme.fg("success", `${count} models`);
-      for (const m of shown) {
-        text += `\n  ${theme.fg("dim", m)}`;
-      }
+      const lines = shown.map((m) => `  ${theme.fg("dim", m)}`);
       if (omitted > 0) {
-        text += `\n  ${theme.fg("muted", `… +${omitted} more (${keyHint("app.tools.expand", "expand")})`)}`;
+        lines.push(`  ${theme.fg("muted", `… more (${keyHint("app.tools.expand", "expand")})`)}`);
       }
-      return new Text(text, 0, 0);
+      lines.push(theme.fg("success", `${count} models`));
+      return new Text(lines.join("\n"), 0, 0);
     },
   });
 
