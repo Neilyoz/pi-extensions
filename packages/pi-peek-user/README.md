@@ -14,11 +14,11 @@ Opens a centered overlay that serializes the current conversation and streams an
 │ debounce uses requestAnimationFrame, cancelled   │
 │ in the useEffect cleanup…                        │
 ├──────────────────────────────────────────────────┤
-│ › ask anything about this session…               │
+│ ▮                                                │
 ├──────────────────────────────────────────────────┤
 │ model deepseek/deepseek-v4-flash   tokens 1.2k   │
 ├──────────────────────────────────────────────────┤
-│ Esc close · Enter send                           │
+│ Esc close · ↑↓ scroll · Enter send               │
 ╰──────────────────────────────────────────────────╯
 ```
 

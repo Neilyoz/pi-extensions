@@ -14,7 +14,7 @@
  *   ├──────────────────────────────────────────────────────┤
  *   │ <answer region: auto-height, scrollable, streaming>  │
  *   ├──────────────────────────────────────────────────────┤
- *   │ › <input or waiting…>                                │  composer
+ *   │ <editor: input or waiting…>                        │  composer
  *   ├──────────────────────────────────────────────────────┤
  *   │ model <utility>                   tokens <n>         │  status
  *   ├──────────────────────────────────────────────────────┤
@@ -27,6 +27,8 @@
  */
 
 import {
+  type EditorTheme,
+  Editor,
   matchesKey,
   truncateToWidth,
   visibleWidth,
@@ -74,7 +76,7 @@ export class PeekOverlay {
   private api = getPeekAPI();
 
   private mode: Mode = "input";
-  private input = "";
+  private editor!: Editor;
   private history: HistoryItem[] = [];
 
   // asking state
@@ -106,6 +108,22 @@ export class PeekOverlay {
     this.theme = theme;
     this.done = done;
     this.ctx = ctx;
+
+    // The composer is a real text editor (cursor movement, word delete,
+    // undo, word-wrap) — not the old append-only string. Enter fires
+    // onSubmit, wired to submit().
+    const editorTheme: EditorTheme = {
+      borderColor: (s) => this.theme.fg("accent", s),
+      selectList: {
+        selectedPrefix: (t) => this.theme.fg("accent", t),
+        selectedText: (t) => this.theme.fg("accent", t),
+        description: (t) => this.theme.fg("muted", t),
+        scrollInfo: (t) => this.theme.fg("dim", t),
+        noMatch: (t) => this.theme.fg("warning", t),
+      },
+    };
+    this.editor = new Editor(this.tui as never, editorTheme);
+    this.editor.onSubmit = (value) => this.submit(value);
     this.refreshTracker();
     this.trackerTimer = setInterval(() => this.refreshTracker(), 2000);
   }
@@ -144,26 +162,18 @@ export class PeekOverlay {
       return;
     }
     if (this.mode === "asking") return;
-    if (matchesKey(data, "return")) {
-      this.submit();
-      return;
-    }
-    if (matchesKey(data, "backspace")) {
-      this.input = this.input.slice(0, -1);
-      this.tui.requestRender();
-      return;
-    }
-    if (data.length === 1 && data.charCodeAt(0) >= 32) {
-      this.input += data;
-      this.tui.requestRender();
-    }
+    // The Editor owns all text editing: typed characters, backspace, cursor
+    // movement (Left/Right/Home/End, Ctrl+A/E, word moves), undo, and Enter
+    // (which fires onSubmit → submit). Up/Down stay ours for scrolling the
+    // answer region, so they are NOT forwarded.
+    this.editor.handleInput(data);
+    this.tui.requestRender();
   }
 
-  private submit(): void {
-    const q = this.input.trim();
+  private submit(value: string): void {
+    const q = value.trim();
     if (!q) return;
 
-    this.input = "";
     this.mode = "asking";
     this.stage = "investigating";
     this.askStart = Date.now();
@@ -320,26 +330,23 @@ export class PeekOverlay {
     }
 
     // ── composer lines (calculated first — body height depends on it) ─
+    // The Editor owns the input region: typed text, the cursor (Home/End,
+    // Left/Right, word moves, undo), and word-wrap. Its render() frames the
+    // text with a top/bottom rule; we slice those off (the surrounding
+    // dividers below already frame the region) and cap the row count so a
+    // huge paste can't push the answer region off-screen. Rendered at
+    // innerW-1 with a leading indent space, matching the body rows.
     const composerLines: string[] = [];
     if (this.mode === "asking") {
       composerLines.push(th.fg("dim", " waiting for reply…"));
-    } else if (this.input.length > 0) {
-      const prefix = ` ${th.fg("accent", "›")} `;
-      const prefixW = visibleWidth(prefix);
-      // -1 for the leading space that row() prepends
-      const wrapW = Math.max(10, innerW - prefixW - 1);
-      const indent = " ".repeat(prefixW);
-      const wrapped = wrapTextWithAnsi(this.input, wrapW);
-      for (let i = 0; i < wrapped.length && composerLines.length < MAX_COMPOSER_LINES; i++) {
-        composerLines.push((i === 0 ? prefix : indent) + wrapped[i]);
-      }
-      if (wrapped.length > MAX_COMPOSER_LINES) {
-        composerLines.push(indent + th.fg("dim", "…"));
-      }
     } else {
-      composerLines.push(
-        ` ${th.fg("accent", "›")} ${th.fg("dim", "ask anything about this session…")}`,
-      );
+      const editorLines = this.editor.render(innerW - 1).slice(1, -1);
+      for (let i = 0; i < editorLines.length && composerLines.length < MAX_COMPOSER_LINES; i++) {
+        composerLines.push(` ${editorLines[i]}`);
+      }
+      if (editorLines.length > MAX_COMPOSER_LINES) {
+        composerLines.push(` ${th.fg("dim", "…")}`);
+      }
     }
     this.composerRows = composerLines.length;
 
