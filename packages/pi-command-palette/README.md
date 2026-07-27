@@ -34,9 +34,34 @@ Or add to `~/.pi/agent/settings.json`:
 
 The palette lists:
 
-- **Built-in actions** — Model selector, New session, Compact, Reload, Fork, Tree, Resume
+- **Built-in actions** — curated shortcuts for common operations (detailed below)
 - **Extension commands** — All registered `/command` entries
 - **Skills & Templates** — Skill commands and prompt templates
+
+### Built-in actions
+
+Built-in actions are grouped by how they run:
+
+**Run immediately** — they call pi's API directly, no editor round-trip:
+
+| Action | What it does |
+|--------|--------------|
+| Model: Switch Model | Open a model selector overlay; switch instantly |
+| Session: Compact | Compact the conversation right away |
+| Editor: Copy Content | Copy current editor text to the clipboard |
+| Restore: Previous Editor Text | Bring back text saved before the last command _(appears only when available)_ |
+
+**Fill the editor** — they insert the matching `/command` for you to submit, just like any extension command:
+
+| Action | Inserts |
+|--------|---------|
+| Session: New | `/new` |
+| Session: Reload | `/reload` |
+| Session: Fork | `/fork` |
+| Session: Tree | `/tree` |
+| Session: Resume | `/resume` |
+
+> Pi ships with more built-in slash commands (e.g. `/export`, `/share`, `/name`, `/settings`). This palette only surfaces a curated subset above — for the rest, type them directly into the editor.
 
 ### Editor text preservation
 

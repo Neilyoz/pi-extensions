@@ -14,6 +14,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  copyToClipboard,
   DynamicBorder,
   getAgentDir,
   resolveModelScopeWithDiagnostics,
@@ -37,7 +38,8 @@ type CommandAction =
   | { type: "model-select" }
   | { type: "compact" }
   | { type: "reload" }
-  | { type: "restore" };
+  | { type: "restore" }
+  | { type: "copy-editor" };
 
 interface PaletteItem {
   value: string;
@@ -125,6 +127,14 @@ function buildPaletteItems(pi: ExtensionAPI, ctx: ExtensionContext): PaletteItem
     description: "Resume a previous session",
     category: "Built-in",
     action: { type: "editor", text: "/resume" },
+  });
+
+  items.push({
+    value: "__copy_editor",
+    label: "Editor: Copy Content",
+    description: "Copy current editor text to clipboard",
+    category: "Built-in",
+    action: { type: "copy-editor" },
   });
 
   // ── Extension commands, skills, templates ────────────────────
@@ -452,6 +462,16 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
         savedEditorText = currentText;
       }
       ctx.ui.setEditorText("/reload");
+      break;
+    }
+    case "copy-editor": {
+      const text = ctx.ui.getEditorText();
+      if (text && text.trim()) {
+        await copyToClipboard(text);
+        ctx.ui.notify("Copied editor text to clipboard", "info");
+      } else {
+        ctx.ui.notify("Editor is empty", "warning");
+      }
       break;
     }
   }
