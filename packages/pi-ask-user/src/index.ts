@@ -805,8 +805,11 @@ class AskUserPanel implements Component, Focusable {
     customAnswered: boolean,
   ): string {
     if (opt.isOther) {
-      // "Type something." is filled when a custom answer was committed.
-      return customAnswered ? th.fg("success", ICON_RADIO_FILLED) : th.fg("dim", ICON_OTHER);
+      // "Type something." is filled when a custom answer was committed. Match
+      // the question's glyph family so multi-select stays on the check (□/▣)
+      // family instead of jumping to the radio (○/◉) family like single-select.
+      const filled = multi ? ICON_CHECK_FILLED : ICON_RADIO_FILLED;
+      return customAnswered ? th.fg("success", filled) : th.fg("dim", ICON_OTHER);
     }
     if (multi) {
       const checked = st.multiChecked.has(index);
