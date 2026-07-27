@@ -10,6 +10,7 @@
  * - Fuzzy search via SelectList
  * - Floating overlay on top of existing content
  * - Saves editor text before overwriting; offers "Restore" in palette
+ * - Clear editor into the restore buffer
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -39,7 +40,8 @@ type CommandAction =
   | { type: "compact" }
   | { type: "reload" }
   | { type: "restore" }
-  | { type: "copy-editor" };
+  | { type: "copy-editor" }
+  | { type: "clear-editor" };
 
 interface PaletteItem {
   value: string;
@@ -53,6 +55,18 @@ interface PaletteItem {
 
 /** Editor text saved before the palette overwrites it. */
 let savedEditorText: string | null = null;
+
+/**
+ * Explicit display order for built-in palette entries (lower = higher up).
+ * Unlisted built-ins fall back to alphabetical, after the listed ones;
+ * non-built-in entries always sort after built-ins.
+ */
+const BUILTIN_ORDER: Record<string, number> = {
+  __model_select: 0,
+  __restore: 1,
+  __copy_editor: 2,
+  __clear_editor: 3,
+};
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -137,6 +151,14 @@ function buildPaletteItems(pi: ExtensionAPI, ctx: ExtensionContext): PaletteItem
     action: { type: "copy-editor" },
   });
 
+  items.push({
+    value: "__clear_editor",
+    label: "Editor: Clear Content",
+    description: "Clear editor (recover via Restore)",
+    category: "Built-in",
+    action: { type: "clear-editor" },
+  });
+
   // ── Extension commands, skills, templates ────────────────────
   const commands = pi.getCommands();
   for (const cmd of commands) {
@@ -153,10 +175,17 @@ function buildPaletteItems(pi: ExtensionAPI, ctx: ExtensionContext): PaletteItem
     });
   }
 
-  // Sort: built-in first, then alphabetically within category
+  // Sort: built-in actions first, ordered by BUILTIN_ORDER (then alphabetical
+  // for unlisted built-ins); extension commands follow alphabetically.
   items.sort((a, b) => {
-    if (a.category === "Built-in" && b.category !== "Built-in") return -1;
-    if (a.category !== "Built-in" && b.category === "Built-in") return 1;
+    const aBuilt = a.category === "Built-in";
+    const bBuilt = b.category === "Built-in";
+    if (aBuilt !== bBuilt) return aBuilt ? -1 : 1;
+    if (aBuilt) {
+      const ai = BUILTIN_ORDER[a.value] ?? Number.MAX_SAFE_INTEGER;
+      const bi = BUILTIN_ORDER[b.value] ?? Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+    }
     return a.label.localeCompare(b.label);
   });
 
@@ -469,6 +498,19 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
       if (text && text.trim()) {
         await copyToClipboard(text);
         ctx.ui.notify("Copied editor text to clipboard", "info");
+      } else {
+        ctx.ui.notify("Editor is empty", "warning");
+      }
+      break;
+    }
+    case "clear-editor": {
+      // Save current editor text to the restore buffer before clearing, so
+      // the built-in Restore action can bring it back.
+      const currentText = ctx.ui.getEditorText();
+      if (currentText && currentText.trim()) {
+        savedEditorText = currentText;
+        ctx.ui.setEditorText("");
+        ctx.ui.notify("Cleared editor — use Restore to recover", "info");
       } else {
         ctx.ui.notify("Editor is empty", "warning");
       }

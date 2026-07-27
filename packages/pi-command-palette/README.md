@@ -49,6 +49,7 @@ Built-in actions are grouped by how they run:
 | Model: Switch Model | Open a model selector overlay; switch instantly |
 | Session: Compact | Compact the conversation right away |
 | Editor: Copy Content | Copy current editor text to the clipboard |
+| Editor: Clear Content | Clear the editor, saving the current text to the restore buffer |
 | Restore: Previous Editor Text | Bring back text saved before the last command _(appears only when available)_ |
 
 **Fill the editor** — they insert the matching `/command` for you to submit, just like any extension command:
@@ -65,7 +66,7 @@ Built-in actions are grouped by how they run:
 
 ### Editor text preservation
 
-When a command replaces your current editor text, the original content is saved and a **Restore: Previous Editor Text** entry appears at the top of the palette. Select it to get your text back.
+When a command replaces your editor text, or you run **Editor: Clear Content**, the original content is saved and a **Restore: Previous Editor Text** entry appears at the top of the palette. Select it to get your text back.
 
 ### Model selector
 
