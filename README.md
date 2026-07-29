@@ -20,11 +20,13 @@ A collection of small extensions for [Pi Coding Agent](https://pi.dev).
 | [`pi-command-palette`](./packages/pi-command-palette) | Global command palette — Ctrl+Shift+P to search and run commands from anywhere |
 | [`pi-session-namer`](./packages/pi-session-namer) <sup>†</sup> | Auto-name sessions using a cheap side agent |
 | [`pi-access-denied`](./packages/pi-access-denied) | Sandbox `write`/`edit`/`bash` to the project dir — prompt / deny / allow modes with per-session allow-deny memory |
+| [`pi-mesh`](./packages/pi-mesh) | Agent mesh — peer discovery + cross-instance transport; the neutral foundation `pi-peek-agent` and `pi-chat-room` build on |
 | [`pi-peek`](./packages/pi-peek) <sup>†</sup> | Core consult engine — hooks that track the main agent's turns and power the utility-model investigate backend; consumed by `pi-peek-user` and `pi-peek-agent` |
 | [`pi-peek-user`](./packages/pi-peek-user) <sup>‡</sup> | `/peek` overlay — ask your own session a question via the utility model, read-after-burn (never disturbs the main agent) |
-| [`pi-peek-agent`](./packages/pi-peek-agent) <sup>‡</sup> | Cross-instance peek — `peek`/`peek_list` tools over a zero-dep Unix domain socket mesh; ask another pi instance without disturbing it |
+| [`pi-peek-agent`](./packages/pi-peek-agent) <sup>§</sup><sup>‡</sup> | Cross-instance peek — `peek` tool over the pi-mesh transport; ask another pi instance without disturbing it |
+| [`pi-chat-room`](./packages/pi-chat-room) <sup>§</sup> | Agent-to-agent messaging — `send_to` tool; incoming messages arrive as `[From: NAME]` user messages |
 
-> <sup>†</sup> Requires [`pi-model-roles`](./packages/pi-model-roles) installed; <sup>‡</sup> Requires [`pi-peek`](./packages/pi-peek) installed (which itself requires [`pi-model-roles`](./packages/pi-model-roles))
+> <sup>†</sup> Requires [`pi-model-roles`](./packages/pi-model-roles) installed; <sup>‡</sup> requires [`pi-peek`](./packages/pi-peek) installed (which itself requires `pi-model-roles`); <sup>§</sup> requires [`pi-mesh`](./packages/pi-mesh) installed.
 
 ## Libraries
 
