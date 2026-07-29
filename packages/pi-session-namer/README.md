@@ -42,7 +42,7 @@ Project-level `.pi/settings.json` overrides global settings.
 | `/namer` | Show status and config |
 | `/namer:enable` | Enable auto-naming for the current session |
 | `/namer:disable` | Disable auto-naming for the current session |
-| `/namer:rename` | Regenerate session name from last prompt |
+| `/namer:rename` | Regenerate session name from the first exchange |
 
 The enable/disable commands are intentionally session-only. For a persistent choice, set `sessionNamer.enabled` in `settings.json`; the extension does not rewrite user configuration files.
 

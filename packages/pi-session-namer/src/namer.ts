@@ -11,19 +11,27 @@ import type { SessionNamerConfig } from "./types.ts";
 /** Hard timeout for the naming side agent (ms). A short title needs ~dozens of tokens. */
 const NAMER_TIMEOUT_MS = 10_000;
 
+/** The opening exchange used to name a session. */
+export interface NamingExchange {
+  user: string;
+  assistant?: string;
+}
+
 /**
  * Build the system prompt for the naming side agent.
  */
 export function buildNamerSystemPrompt(maxLength: number): string {
   return [
-    `You are a session naming assistant. Generate a concise title for a coding session based on the user's first message.`,
+    `You are a session naming assistant. Generate a concise title for a coding session based on the first exchange (the user's opening message and the assistant's first reply).`,
     ``,
     `Rules:`,
     `- Output in the SAME language as the user's message`,
     `- Maximum ${maxLength} characters`,
     `- Output ONLY the title, no quotes, no prefix, no explanation`,
-    `- Summarize intent, do not copy the original message verbatim`,
-    `- If the message mentions specific files, modules, or functions, keep those names`,
+    `- The input wraps the user's message in <user_message> and the assistant's reply in <assistant_reply>; name the session after the user's intent`,
+    `- Summarize the user's intent; do not copy any message verbatim`,
+    `- Reflect what the session is about, not the latest progress`,
+    `- If the exchange mentions specific files, modules, or functions, keep those names`,
     `- Be specific: "Fix auth token refresh bug" is better than "Fix a bug"`,
   ].join("\n");
 }
@@ -35,12 +43,19 @@ export async function generateSessionName(
   rolesApi: ModelRolesAPI,
   roleName: string,
   config: SessionNamerConfig,
-  userPrompt: string,
+  exchange: NamingExchange,
 ): Promise<string> {
   const systemPrompt = buildNamerSystemPrompt(config.maxLength);
 
-  // Truncate very long prompts to avoid wasting tokens
-  const truncatedPrompt = userPrompt.length > 2000 ? userPrompt.slice(0, 2000) + "..." : userPrompt;
+  // Pack the exchange into a single user message: the side agent only needs to
+  // read the opening exchange, not replay it as conversation history.
+  const promptText = exchange.assistant?.trim()
+    ? `<user_message>\n${exchange.user}\n</user_message>\n\n<assistant_reply>\n${exchange.assistant}\n</assistant_reply>`
+    : exchange.user;
+
+  // Truncate to avoid wasting tokens on long pastes.
+  const truncatedPrompt =
+    promptText.length > 2000 ? promptText.slice(0, 2000) + "..." : promptText;
 
   const signal = AbortSignal.timeout(NAMER_TIMEOUT_MS);
   const result = await rolesApi.completeWithRole(

@@ -12,7 +12,7 @@ import type { ModelRolesAPI } from "@d3ara1n/pi-model-roles";
 import { DEFAULT_CONFIG } from "./types.ts";
 import type { SessionNamerConfig } from "./types.ts";
 import { loadNamerConfig } from "./config.ts";
-import { generateSessionName } from "./namer.ts";
+import { generateSessionName, type NamingExchange } from "./namer.ts";
 
 export default function sessionNamerExtension(pi: ExtensionAPI) {
   let config: SessionNamerConfig = DEFAULT_CONFIG;
@@ -62,7 +62,7 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
           rolesApi,
           config.sideAgentRole,
           config,
-          event.prompt,
+          { user: event.prompt },
         );
 
         pi.setSessionName(name);
@@ -120,10 +120,12 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
 
   // ── /namer:rename — force regenerate ────────────────────────────
   pi.registerCommand("namer:rename", {
-    description: "Regenerate session name from the last user prompt",
+    description: "Regenerate session name from the first exchange",
     handler: async (_args, ctx) => {
-      const lastUserPrompt = getLastUserPrompt(ctx.sessionManager.getEntries());
-      if (!lastUserPrompt?.trim()) {
+      const { user: firstUser, assistant: firstAssistant } = getFirstExchange(
+        ctx.sessionManager.getEntries(),
+      );
+      if (!firstUser?.trim()) {
         ctx.ui.notify("No user prompt available to generate a name from.", "warning");
         return;
       }
@@ -149,7 +151,7 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
           rolesApi,
           config.sideAgentRole,
           config,
-          lastUserPrompt,
+          { user: firstUser, assistant: firstAssistant?.trim() || undefined },
         );
 
         pi.setSessionName(name);
@@ -163,21 +165,26 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
 }
 
 /**
- * Extract the most recent user message text from session entries.
+ * Extract the first user message and first assistant reply from session entries.
  *
  * Read live from the session manager rather than a cached variable, so it
  * survives extension reloads (which reset closure state).
  */
-function getLastUserPrompt(entries: unknown[]): string | undefined {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i] as any;
+function getFirstExchange(entries: unknown[]): { user?: string; assistant?: string } {
+  const result: { user?: string; assistant?: string } = {};
+  for (const entry of entries as any[]) {
     if (entry?.type !== "message") continue;
     const msg = entry.message;
-    if (msg?.role !== "user") continue;
-    const text = extractEntryText(msg.content);
-    if (text.trim()) return text;
+    const text = extractEntryText(msg?.content);
+    if (!text.trim()) continue;
+    if (msg?.role === "user" && !result.user) {
+      result.user = text;
+    } else if (msg?.role === "assistant" && !result.assistant) {
+      result.assistant = text;
+    }
+    if (result.user && result.assistant) break;
   }
-  return undefined;
+  return result;
 }
 
 /** Pull text out of a content field that may be a string or a ContentBlock[]. */

@@ -15,7 +15,7 @@ async function generatedName(maxLength: number): Promise<string> {
     },
   };
   const config: SessionNamerConfig = { enabled: true, sideAgentRole: "utility", maxLength };
-  return generateSessionName(rolesApi as any, "utility", config, "Name this session");
+  return generateSessionName(rolesApi as any, "utility", config, { user: "Name this session" });
 }
 
 test("session namer treats zero length as unlimited", async () => {
