@@ -1,0 +1,31 @@
+{
+  "name": "@d3ara1n/pi-mesh",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Agent mesh for pi — peer discovery + cross-instance transport. The neutral foundation that pi-peek-agent, chat-room, and other multi-instance workflows build on. Self-sufficient: install alone to discover peers and self-introduce a role.",
+  "main": "src/index.ts",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/d3ara1n/pi-extensions",
+    "directory": "packages/pi-mesh"
+  },
+  "license": "MIT"
+}
