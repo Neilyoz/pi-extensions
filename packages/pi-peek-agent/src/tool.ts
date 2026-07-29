@@ -6,8 +6,11 @@
  * @d3ara1n/pi-mesh (its `mesh_list` tool) — resolvePeer/connect come from there.
  *
  * Rendering follows the built-in tool convention: the call cell already shows
- * the tool name, so renderResult MUST NOT repeat it — it only renders the
- * result body (collapsed = first line, expanded = full).
+ * the tool name, so renderResult MUST NOT repeat it. Collapsed shows the first
+ * line of the answer; expanded shows the original question (read from
+ * ToolRenderContext.args, which pi shares across call/result renders for one
+ * tool call) above the full answer, so the whole exchange is visible when
+ * expanded.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -62,7 +65,7 @@ export function registerPeekTool(pi: ExtensionAPI): void {
       return new Text(theme.fg("toolTitle", theme.bold("peek")) + theme.fg("accent", target), 0, 0);
     },
 
-    // Result cell: NO tool name. Collapsed = first line of the answer.
+    // Result cell: NO tool name. Collapsed = first line of the answer; expanded = question + full answer.
     renderResult(result, { expanded }, theme, context) {
       const isError = context.isError;
       const isPartial = context.isPartial;
@@ -75,6 +78,23 @@ export function registerPeekTool(pi: ExtensionAPI): void {
 
       if (expanded) {
         const c = new Container();
+        // The question asked (shared across call/result renders for this tool
+        // call via ToolRenderContext.args). Surfaced above the answer so the
+        // full Q&A exchange is visible when expanded.
+        const question =
+          typeof context.args?.question === "string" ? context.args.question : "";
+        if (question.trim()) {
+          c.addChild(
+            new Text(
+              theme.fg("accent", theme.bold("Q")) +
+                theme.fg("dim", "  ") +
+                theme.fg("muted", question),
+              0,
+              0,
+            ),
+          );
+          c.addChild(new Text("", 0, 0));
+        }
         for (const ln of text.split("\n")) {
           c.addChild(new Text(isError ? theme.fg("error", ln) : ln, 0, 0));
         }
