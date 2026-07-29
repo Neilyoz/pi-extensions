@@ -1,22 +1,23 @@
 /**
- * pi-peek-agent tools — exposes cross-instance peek to the main agent (LLM).
+ * pi-peek-agent tool — exposes cross-instance peek to the main agent (LLM).
  *
- * Two tools (split so schema validation enforces required params at the
- * framework level — no hand-rolled "missing question" messages):
- *
- *   peek_list()                                 → list online peers
- *   peek({ question, at?, sessionId? })         → ask a peer (question required)
+ * One tool: peek({ question, at?, sessionId? }) asks a peer a question.
+ * `question` is required (enforced by schema). Peer discovery moved to
+ * @d3ara1n/pi-mesh (its `mesh_list` tool) — resolvePeer/connect come from there.
  *
  * Rendering follows the built-in tool convention: the call cell already shows
  * the tool name, so renderResult MUST NOT repeat it — it only renders the
- * result body (collapsed = tight summary, expanded = full).
+ * result body (collapsed = first line, expanded = full).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { getPeekAgentAPI } from "./api.ts";
-import type { PeerInfo } from "./types.ts";
+import { getMeshAPI } from "@d3ara1n/pi-mesh";
+import type { PeerInfo } from "@d3ara1n/pi-mesh";
+import { loadPeekConfig } from "./config.ts";
+import { ASK_TYPE } from "./types.ts";
+import type { AskResponseData } from "./types.ts";
 
 /** Build a tool result (AgentToolResult requires a `details` field). */
 function textResult(text: string, isError = false) {
@@ -27,71 +28,7 @@ function textResult(text: string, isError = false) {
   };
 }
 
-/** Compact "name, name, name +N more" summary of a peer list. */
-function summarizePeers(peers: PeerInfo[], max = 5): string {
-  if (peers.length === 0) return "no peers online";
-  const shown = peers.slice(0, max);
-  const names = shown.map((p) => (p.gitBranch ? `${p.name}:${p.gitBranch}` : p.name)).join(", ");
-  const more = peers.length - shown.length;
-  return more > 0 ? `${names} +${more} more` : names;
-}
-
-function fullPeerList(peers: PeerInfo[]): string {
-  if (peers.length === 0) return "No peers online.";
-  return peers
-    .map((p) => {
-      const branch = p.gitBranch ? ` (${p.gitBranch})` : "";
-      const status = p.status?.activity ? ` · ${p.status.activity}` : "";
-      const ambig = p.ambiguous ? " ⚠ duplicate name" : "";
-      return `- ${p.name}${branch}${ambig}  [${p.cwd}]${status}`;
-    })
-    .join("\n");
-}
-
-export function registerPeekTools(pi: ExtensionAPI): void {
-  // ── peek_list: list online peers ──────────────────────────────────────
-  pi.registerTool({
-    name: "peek_list",
-    label: "List pi instances",
-    description:
-      "List other pi instances online (visible to cross-instance peek), grouped by project. " +
-      "Use before peek() to discover names. Peers appear only if they have @d3ara1n/pi-peek-agent loaded.",
-    promptSnippet: "List online pi instances visible to cross-instance peek",
-
-    parameters: Type.Object({}),
-
-    // Call cell: tool name + count hint (the summary appears in the result cell).
-    renderCall(_args, theme) {
-      return new Text(theme.fg("toolTitle", theme.bold("peek_list")), 0, 0);
-    },
-
-    // Result cell: NO tool name (call already shows it). Collapsed = name summary.
-    renderResult(result, { expanded }, theme, context) {
-      const isError = context.isError;
-      const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-      const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-
-      if (expanded) {
-        const c = new Container();
-        for (const ln of text.split("\n")) c.addChild(new Text(ln, 0, 0));
-        return c;
-      }
-      // Collapsed: parse the full list back into a peer-name summary.
-      // (text is fullPeerList output; extract names from "- Name (branch) …" lines)
-      const peers = parsePeerList(text);
-      return new Text(`${icon} ${theme.fg("dim", summarizePeers(peers))}`, 0, 0);
-    },
-
-    async execute() {
-      const api = getPeekAgentAPI();
-      const peers = await api.listPeers();
-      return textResult(
-        `${peers.length} peer${peers.length === 1 ? "" : "s"} online\n` + fullPeerList(peers),
-      );
-    },
-  });
-
-  // ── peek: ask a peer a question (question is required, enforced by schema) ──
+export function registerPeekTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "peek",
     label: "Peek at another instance",
@@ -99,7 +36,7 @@ export function registerPeekTools(pi: ExtensionAPI): void {
       "Peek at another pi instance — ask it a question without disturbing its main conversation. " +
       "The peeked instance's main agent is completely unaffected; the answer comes from its side " +
       "utility model (read-after-burn). Use for cross-instance coordination: check progress, " +
-      "confirm details, ask how something works. Use peek_list first to discover names.",
+      "confirm details, ask how something works. Use mesh_list first to discover names.",
     promptSnippet: "Ask another pi instance a question without disturbing it (cross-instance peek)",
 
     parameters: Type.Object({
@@ -151,9 +88,9 @@ export function registerPeekTools(pi: ExtensionAPI): void {
       return new Text(`${icon} ${body}`, 0, 0);
     },
 
-    async execute(_toolCallId, params, signal) {
-      const api = getPeekAgentAPI();
-      const resolved = await api.resolvePeer({
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const mesh = getMeshAPI();
+      const resolved = await mesh.resolvePeer({
         at: params.at,
         sessionId: params.sessionId,
       });
@@ -161,7 +98,7 @@ export function registerPeekTools(pi: ExtensionAPI): void {
       if (!resolved) {
         return textResult(
           params.at
-            ? `No online peer named '${params.at}'. Call peek_list to see who's online.`
+            ? `No online peer named '${params.at}'. Call mesh_list to see who's online.`
             : "No other pi instance available to peek.",
           true,
         );
@@ -181,9 +118,20 @@ export function registerPeekTools(pi: ExtensionAPI): void {
       }
 
       const peer = resolved as PeerInfo;
+      const cfg = loadPeekConfig(ctx?.cwd);
       try {
-        const answer = await api.askPeer(peer, params.question, { signal });
-        return textResult(answer);
+        const conn = await mesh.connect(peer);
+        try {
+          const result = await conn.request(
+            ASK_TYPE,
+            { question: params.question },
+            { signal, timeoutMs: cfg.askTimeoutMs },
+          );
+          const answer = (result as AskResponseData | undefined)?.answer ?? "";
+          return textResult(answer);
+        } finally {
+          conn.close();
+        }
       } catch (err) {
         return textResult(
           `peek ${peer.name} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -192,19 +140,4 @@ export function registerPeekTools(pi: ExtensionAPI): void {
       }
     },
   });
-}
-
-/** Parse fullPeerList() output back into names for the collapsed summary. */
-function parsePeerList(text: string): PeerInfo[] {
-  const peers: PeerInfo[] = [];
-  for (const line of text.split("\n")) {
-    const m = line.match(/^\s*-\s+(\S+)(?:\s+\(([^)]+)\))?/);
-    if (m) {
-      peers.push({
-        name: m[1]!,
-        gitBranch: m[2],
-      } as PeerInfo);
-    }
-  }
-  return peers;
 }

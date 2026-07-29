@@ -1,16 +1,18 @@
 /**
  * Read pi-peek-agent configuration from the `peek` settings block.
  *
- * Shares the `peek` block with @d3ara1n/pi-peek (which reads serialize-tuning
- * fields there). This package reads only the cross-instance fields.
+ * Only the ask timeout lives here — discovery/registry/heartbeat config moved
+ * to @d3ara1n/pi-mesh's `mesh` block. This package shares the `peek` block with
+ * @d3ara1n/pi-peek (which reads serialize-tuning fields there); we read only
+ * `askTimeoutMs`.
  */
 
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentConfig } from "./types.ts";
-import { DEFAULT_AGENT_CONFIG } from "./types.ts";
+import type { PeekConfig } from "./types.ts";
+import { DEFAULT_PEEK_CONFIG } from "./types.ts";
 
 function getAgentDir(): string {
   const envDir = process.env["PI_AGENT_DIR"];
@@ -19,6 +21,8 @@ function getAgentDir(): string {
 }
 
 function readSettingsFile(filePath: string): any {
+  // Standard JSON — parse directly; never regex-strip comments (would truncate
+  // string literals containing `//` and silently corrupt config).
   try {
     const content = fs.readFileSync(filePath, "utf-8");
     return JSON.parse(content);
@@ -39,16 +43,15 @@ function positiveNumber(value: unknown, fallback: number): number {
 
 /**
  * Load pi-peek-agent config. Project overrides global wholesale; per-field
- * `?? DEFAULT` fills any gap. (No field-level merge — project replaces global.) */
-export function loadAgentConfig(cwd?: string): AgentConfig {
+ * `?? DEFAULT` fills any gap. (No field-level merge — project replaces global.)
+ */
+export function loadPeekConfig(cwd?: string): PeekConfig {
   const globalRaw = readPeek(path.join(getAgentDir(), "settings.json"));
   const projectRaw = cwd ? readPeek(path.join(cwd, CONFIG_DIR_NAME, "settings.json")) : undefined;
   const raw = projectRaw ?? globalRaw;
-  if (!raw) return { ...DEFAULT_AGENT_CONFIG };
+  if (!raw) return { ...DEFAULT_PEEK_CONFIG };
 
   return {
-    registryDir: typeof raw.registryDir === "string" && raw.registryDir.trim() ? raw.registryDir : undefined,
-    heartbeatMs: positiveNumber(raw.heartbeatMs, DEFAULT_AGENT_CONFIG.heartbeatMs),
-    askTimeoutMs: positiveNumber(raw.askTimeoutMs, DEFAULT_AGENT_CONFIG.askTimeoutMs),
+    askTimeoutMs: positiveNumber(raw.askTimeoutMs, DEFAULT_PEEK_CONFIG.askTimeoutMs),
   };
 }

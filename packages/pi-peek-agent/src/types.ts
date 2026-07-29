@@ -1,92 +1,30 @@
 /**
- * pi-peek-agent shared types.
+ * pi-peek-agent shared types — the peek business layer.
  *
- * Cross-instance transport (UDS) + peer discovery + the LLM `peek` tool.
- * This is the only package that knows about sockets, registry markers, or
- * other pi instances. It consumes @d3ara1n/pi-peek's LOCAL investigate()
- * capability to answer remote asks.
+ * Only peek-specific types live here. Peer identity, discovery, and the
+ * cross-instance transport moved to @d3ara1n/pi-mesh; import those from there.
+ * What remains is the "ask" wire protocol and the ask-timeout config.
  */
-
-import * as os from "node:os";
-import * as path from "node:path";
-import type { MainAgentStatus } from "@d3ara1n/pi-peek";
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-export interface AgentConfig {
-  /** Registry directory for PID-file markers. Default ~/.pi/peek/registry. */
-  registryDir?: string;
-  /** How often to refresh our own marker's lastSeen. Default 15s. */
-  heartbeatMs?: number;
-  /** askPeer synchronous wait timeout. Default 120s. */
+export interface PeekConfig {
+  /** Synchronous wait timeout for a remote ask. Default 120s. */
   askTimeoutMs?: number;
 }
 
-export const DEFAULT_AGENT_CONFIG: Required<
-  Pick<AgentConfig, "heartbeatMs" | "askTimeoutMs">
-> = {
-  heartbeatMs: 15_000,
+export const DEFAULT_PEEK_CONFIG: Required<Pick<PeekConfig, "askTimeoutMs">> = {
   askTimeoutMs: 120_000,
 };
 
 // ---------------------------------------------------------------------------
-// Peer discovery
+// "ask" wire protocol (carried over the mesh's "ask" request channel)
 // ---------------------------------------------------------------------------
 
-export interface PeerInfo {
-  /** Unique instance id (crypto.randomUUID()). */
-  sessionId: string;
-  /** OS pid — used for liveness probing (kill(pid, 0)). */
-  pid: number;
-  /** UDS path to connect to. */
-  sockPath: string;
-  /** Display name (PI_PEEK_NAME or random adjective+noun). */
-  name: string;
-  /** Working directory — used to group "same project" peers. */
-  cwd: string;
-  /** Git branch, if any (same-project disambiguation). */
-  gitBranch?: string;
-  /** Current main model id (provider/id). */
-  model: string;
-  /** When this peer's session started (ISO). */
-  since: string;
-  /** Last heartbeat (ISO). Socket probe is authoritative; this is auxiliary. */
-  lastSeen: string;
-  /** Live tracker snapshot, if available (from pi-peek). */
-  status?: MainAgentStatus;
-  /** True when multiple live peers share this name (name collision). */
-  ambiguous?: boolean;
-}
-
-export interface ResolvePeerOptions {
-  /** Target by name. Omit to auto-pick the other same-project peer. */
-  at?: string;
-  /** Target by exact sessionId (wins over `at` on collision). */
-  sessionId?: string;
-}
-
-// ---------------------------------------------------------------------------
-// askPeer() — cross-instance synchronous ask
-// ---------------------------------------------------------------------------
-
-export interface AskPeerOptions {
-  /** Streaming token callback (answer arrives incrementally). */
-  onToken?: (delta: string) => void;
-  /** Stage callback: "connecting" | "sent" | "investigating" | "done" | "error". */
-  onStage?: (stage: string) => void;
-  /** Peer status push callback (tracker of the remote peer). */
-  onStatus?: (peer: PeerInfo) => void;
-  /** Override the synchronous wait timeout. */
-  timeoutMs?: number;
-  /** Abort the ask. */
-  signal?: AbortSignal;
-}
-
-// ---------------------------------------------------------------------------
-// IPC wire protocol (JSON-per-line framing over UDS)
-// ---------------------------------------------------------------------------
+/** Mesh request type string for a peek ask. */
+export const ASK_TYPE = "ask";
 
 export interface AskRequestData {
   question: string;
@@ -94,64 +32,4 @@ export interface AskRequestData {
 
 export interface AskResponseData {
   answer: string;
-}
-
-export interface IpcRequest {
-  kind: "request";
-  id: string;
-  type: "ask" | "ping";
-  data?: unknown;
-}
-
-export interface IpcResponse {
-  kind: "response";
-  id: string;
-  ok: boolean;
-  data?: unknown;
-  error?: string;
-}
-
-export interface IpcEmit {
-  kind: "emit";
-  /** "status" = peer info push, "stage" = investigate stage, "token" = streamed delta. */
-  type: "status" | "stage" | "token";
-  data?: unknown;
-}
-
-export type IpcMessage = IpcRequest | IpcResponse | IpcEmit;
-
-// ---------------------------------------------------------------------------
-// PeekAgentAPI — the singleton surface (cross-instance)
-// ---------------------------------------------------------------------------
-
-export interface PeekAgentAPI {
-  /** Update the recorded model id (on model_select). */
-  updateModel(modelId: string): void;
-  /** This instance's own identity (for display + registry marker). */
-  getSelfInfo(): PeerInfo;
-  /** List live peers (same-project first). Stale/crashed peers are pruned. */
-  listPeers(): Promise<PeerInfo[]>;
-  /** Resolve a target peer. Returns PeerInfo, an array (name collision), or undefined. */
-  resolvePeer(opts: ResolvePeerOptions): Promise<PeerInfo | PeerInfo[] | undefined>;
-  /** Ask a peer a question, blocking until the full answer returns. */
-  askPeer(peer: PeerInfo, question: string, opts?: AskPeerOptions): Promise<string>;
-  /** Count of live peers (for the statusbar widget). */
-  countPeers(): Promise<number>;
-  /** Override the display name (updates self + widget + registry). */
-  setName(name: string): void;
-}
-
-/** Global key for the PeekAgentAPI singleton. */
-export const PEEK_AGENT_GLOBAL_KEY = "__piPeekAgent";
-
-/** Default IPC socket directory (POSIX). Windows uses named pipes, not a file path. */
-export function defaultSockDir(): string {
-  // os.tmpdir() is cross-platform: $TMPDIR on POSIX, %TEMP% on Windows.
-  return os.tmpdir();
-}
-
-/** Default registry directory for PID-file markers. */
-export function defaultRegistryDir(): string {
-  // os.homedir() resolves to $HOME on POSIX and %USERPROFILE% on Windows.
-  return path.join(os.homedir(), ".pi", "peek", "registry");
 }

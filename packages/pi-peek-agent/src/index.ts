@@ -1,331 +1,60 @@
 /**
  * pi-peek-agent — Extension entry point.
  *
- * Cross-instance peek: UDS mesh + peer discovery + the `peek` LLM tool + a
- * statusbar widget. Consumes @d3ara1n/pi-peek's LOCAL investigate() to answer
- * remote asks (the server side runs here; only instances with this package
- * installed are discoverable and can serve asks).
+ * Cross-instance peek, built on @d3ara1n/pi-mesh. This extension owns only the
+ * peek business: it registers an "ask" handler on the mesh (answered via
+ * @d3ara1n/pi-peek's local investigate(), read-after-burn) and exposes the
+ * `peek` LLM tool. Discovery, transport, identity, and the `mesh_list` tool all
+ * live in pi-mesh.
+ *
+ * Load order is NOT significant: we listen for pi-mesh's `mesh:ready` event
+ * (catches mesh init that happens after we load) and fall back to
+ * tryGetMeshAPI() in our own session_start (catches mesh init that happened
+ * before or in the same pass). So pi-mesh and pi-peek-agent may appear in any
+ * order in settings.json.
  */
 
-import { execSync } from "node:child_process";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getPeekAPI } from "@d3ara1n/pi-peek";
-import { initPeekAgentAPI, tryGetPeekAgentAPI } from "./api.ts";
-import { startPeekServer, type PeekServer } from "./ipc.ts";
-import {
-  writeSelfMarker,
-  removeSelfMarker,
-  resolveRegistryDir,
-  cleanupGhostMarkers,
-} from "./discovery.ts";
-import { loadAgentConfig } from "./config.ts";
-import { registerPeekTools } from "./tool.ts";
-import { defaultSockDir, DEFAULT_AGENT_CONFIG } from "./types.ts";
-
-export { getPeekAgentAPI } from "./api.ts";
-export type {
-  PeekAgentAPI,
-  PeerInfo,
-  ResolvePeerOptions,
-  AskPeerOptions,
-  AgentConfig,
-} from "./types.ts";
-
-// Short, memorable names. Single-word so they collide rarely and read cleanly.
-// Deterministically indexed by a hash of the session id (see deriveName), so
-// the same session always gets the same name. ~3600 distinct combos:
-// birthday-paradox collision only beyond ~70 sessions.
-const ADJECTIVES = [
-	"Amber", "Azure", "Bold", "Brave", "Bright", "Brisk", "Bronze", "Calm",
-	"Clear", "Cool", "Coral", "Cosmic", "Crisp", "Dark", "Deep", "Dry",
-	"Fair", "Fierce", "Fresh", "Frost", "Glass", "Gold", "Grand", "Hard",
-	"High", "Indigo", "Iron", "Jade", "Keen", "Lone", "Lunar", "Mellow",
-	"Merry", "Misty", "Mossy", "Neon", "Noble", "Olive", "Onyx", "Pale",
-	"Prime", "Pure", "Quiet", "Rapid", "Rich", "Ruby", "Sandy", "Sharp",
-	"Silver", "Slow", "Soft", "Solar", "Steady", "Steel", "Still", "Stone",
-	"Stormy", "Sunny", "Swift", "Vast", "Vivid", "Warm", "Wet", "Wild",
-	"Wise",
-];
-const NOUNS = [
-	"Ash", "Aspen", "Badger", "Bear", "Bee", "Birch", "Brook", "Cedar",
-	"Cliff", "Clover", "Crag", "Crane", "Creek", "Dick", "Doe", "Dune",
-	"Elm", "Falcon", "Fern", "Finch", "Flax", "Fox", "Gale", "Glen",
-	"Grove", "Hare", "Hawk", "Heron", "Holly", "Iris", "Juniper", "Lark",
-	"Laurel", "Lotus", "Lynx", "Magpie", "Maple", "Marsh", "Meadow", "Moth",
-	"Newt", "Oak", "Orchid", "Otter", "Owl", "Peak", "Pika", "Pine",
-	"Pond", "Pussy", "Raven", "Reed", "Ridge", "River", "Robin", "Sage",
-	"Seal", "Spruce", "Stoat", "Thyme", "Tide", "Vale", "Willow", "Wolf",
-	"Wren",
-];
-
-/**
- * Derive a stable, memorable name from a session id.
- *
- * The name is a PURE FUNCTION of the session id (hash → pool index), so the
- * same session always gets the same name — across /reload, across restarts,
- * across machines. No persistence needed: re-deriving is cheaper and can't
- * drift. PI_PEEK_NAME still wins if set.
- */
-function deriveName(sessionId: string): string {
-  // FNV-1a over the sessionId → two independent 16-bit indices.
-  let h1 = 0x811c9dc5;
-  let h2 = 0x811c9dc5;
-  for (let i = 0; i < sessionId.length; i++) {
-    const c = sessionId.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
-    h2 = Math.imul(h2 ^ (c + 0x9e3779b9), 0x01000193) >>> 0;
-  }
-  const adj = ADJECTIVES[h1 % ADJECTIVES.length] ?? "Peek";
-  const noun = NOUNS[h2 % NOUNS.length] ?? "";
-  return noun ? `${adj}${noun}` : "Peek";
-}
-
-function getGitBranch(cwd: string): string | undefined {
-  try {
-    const out = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-      timeout: 2000,
-    });
-    const b = out.trim();
-    return b || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Build the IPC endpoint path for this session.
- *
- * On Windows we use a named pipe (`\\.\pipe\pi-peek-<id>`) — Node/Bun's
- * `node:net` transparently uses named pipes when the path is in the
- * `\\.\pipe\` / `\\?\pipe\` namespace, and Windows removes the pipe
- * automatically when the owning process exits (no unlink needed).
- *
- * On POSIX we use a Unix domain socket file under the temp dir. macOS limits
- * UDS paths to ~104 chars (sun_path), so we fall back to /tmp if too long.
- */
-function makeSockPath(sessionId: string): string {
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\pi-peek-${sessionId}`;
-  }
-  const candidate = `${defaultSockDir()}/pi-peek-${sessionId}.sock`;
-  if (candidate.length <= 100) return candidate;
-  return `/tmp/pi-peek-${sessionId}.sock`;
-}
-
-/** Refresh the statusbar widget: "peek Fox (3)". */
-function refreshWidget(ctx: ExtensionContext, name: string, count: number): void {
-  if (!ctx.hasUI) return;
-  const theme = ctx.ui.theme;
-  if (!theme) return;
-  const label = theme.fg("dim", "peek");
-  const who = theme.fg("accent", name);
-  const n = theme.fg(count > 0 ? "success" : "dim", `(${count})`);
-  ctx.ui.setStatus("peek-agent", `${label} ${who} ${n}`);
-}
+import { MESH_READY_EVENT, tryGetMeshAPI } from "@d3ara1n/pi-mesh";
+import type { MeshAPI } from "@d3ara1n/pi-mesh";
+import { registerPeekTool } from "./tool.ts";
+import { ASK_TYPE } from "./types.ts";
+import type { AskRequestData, AskResponseData } from "./types.ts";
 
 export default function registerPeekAgentExtension(pi: ExtensionAPI): void {
-  let server: PeekServer | null = null;
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
-  let latestCtx: ExtensionContext | null = null;
-  let activeRegistryDir: string | null = null;
+  let registered = false;
 
+  // Register the "ask" handler on the mesh. Idempotent (guarded by `registered`).
+  // peekApi is resolved LAZILY inside the handler — by the time a remote ask
+  // arrives, pi-peek's session_start has long since run, so getPeekAPI() is safe
+  // there and we don't depend on pi-peek's init timing either.
+  function serveAsks(mesh: MeshAPI): void {
+    if (registered) return;
+    registered = true;
+    mesh.serve(ASK_TYPE, async (data, emit) => {
+      const { question } = (data ?? {}) as AskRequestData;
+      const peekApi = getPeekAPI();
+      const { answer } = await peekApi.investigate(question ?? "", {
+        onToken: (delta) => emit("token", { delta }),
+        onStage: (stage) => emit("stage", { stage }),
+      });
+      return { answer } satisfies AskResponseData;
+    });
+  }
+
+  // (a) mesh inits AFTER us → its session_start emits mesh:ready, we catch it.
+  pi.events.on(MESH_READY_EVENT, (mesh: unknown) => serveAsks(mesh as MeshAPI));
+
+  // (b) mesh inits BEFORE us, or in the same session_start pass → already on globalThis.
   pi.on("session_start", async (_event, ctx) => {
-    // Identity follows the SESSION, not the process or a random roll:
-    // sessionId + name + sockPath are all derived from the real session id,
-    // so /reload (same session) keeps the exact same identity, while resume /
-    // fork / new-session get a fresh one. The name is a deterministic hash of
-    // the id (no persistence, can't drift); PI_PEEK_NAME overrides if set.
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sockPath = makeSockPath(sessionId);
-    const name = process.env["PI_PEEK_NAME"] || deriveName(sessionId);
-    const cwd = ctx.cwd;
-    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown";
-    const now = new Date().toISOString();
-
-    const config = loadAgentConfig(cwd);
-    const registryDir = resolveRegistryDir(config.registryDir);
-    activeRegistryDir = registryDir;
-
-    const api = initPeekAgentAPI({
-      self: {
-        sessionId,
-        pid: process.pid,
-        sockPath,
-        name,
-        cwd,
-        gitBranch: getGitBranch(cwd),
-        model,
-        since: now,
-        lastSeen: now,
-      },
-      config,
-      registryDir,
-    });
-
-    // Verify the local consult capability is available (pi-peek must be loaded).
-    try {
-      getPeekAPI();
-    } catch {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          "pi-peek-agent requires @d3ara1n/pi-peek to answer remote asks. Load pi-peek alongside it.",
-          "warning",
-        );
-      }
-    }
-
-    // Wipe markers left by a previous session of this same process (/reload).
-    cleanupGhostMarkers(registryDir, process.pid, sessionId);
-
-    // Serve remote asks: serialize our conversation + investigate via utility model.
-    // Never touches our main session — getPeekAPI().investigate() is read-after-burn.
-    const serverResult = await startPeekServer(sockPath, () => api.getSelfInfo(), {
-      async onAsk(data, emitters) {
-        const peekApi = getPeekAPI();
-        const { answer } = await peekApi.investigate(data.question ?? "", {
-          onToken: emitters.token,
-          onStage: emitters.stage,
-        });
-        return { answer };
-      },
-    });
-
-    if (serverResult.error || !serverResult.server) {
-      const message = `peek-agent failed to start IPC server at ${sockPath}: ${serverResult.error?.message ?? "unknown error"}`;
-      if (ctx.hasUI) ctx.ui.notify(message, "error");
-      else console.error(message);
-      latestCtx = ctx;
-      refreshWidget(ctx, name, 0);
-      return;
-    }
-    server = serverResult.server;
-
-    // Seed our registry marker + heartbeat (also refreshes the widget count).
-    writeSelfMarker(api.getSelfInfo(), registryDir);
-    latestCtx = ctx;
-    refreshWidget(ctx, name, 0);
-
-    const hb = config.heartbeatMs ?? DEFAULT_AGENT_CONFIG.heartbeatMs;
-    heartbeat = setInterval(async () => {
-      writeSelfMarker(api.getSelfInfo(), registryDir);
-      if (latestCtx) {
-        try {
-          const count = await api.countPeers();
-          refreshWidget(latestCtx, name, count);
-        } catch {
-          // ignore — widget keeps last value
-        }
-      }
-    }, hb);
-
-    // Initial peer count (async, non-blocking).
-    void api.countPeers().then((c) => {
-      if (latestCtx) refreshWidget(latestCtx, name, c);
-    });
-
+    const mesh = tryGetMeshAPI();
+    if (!mesh) return; // waiting for the mesh:ready listener to fire
+    serveAsks(mesh);
     if (ctx.hasUI) {
-      ctx.ui.notify(`peek-agent ready as ${name}`, "info");
+      ctx.ui.notify("pi-peek-agent ready (serving asks on the mesh)", "info");
     }
   });
 
-  pi.on("model_select", (event) => {
-    const api = tryGetPeekAgentAPI();
-    const m = event.model;
-    if (api && m) api.updateModel(`${m.provider}/${m.id}`);
-  });
-
-  pi.on("session_shutdown", () => {
-    if (heartbeat) {
-      clearInterval(heartbeat);
-      heartbeat = null;
-    }
-    const api = tryGetPeekAgentAPI();
-    if (api) {
-      try {
-        removeSelfMarker(api.getSelfInfo().sessionId, activeRegistryDir ?? resolveRegistryDir());
-      } catch {
-        // ignore
-      }
-    }
-    if (server) {
-      server.close();
-      server = null;
-    }
-    if (latestCtx?.hasUI) {
-      latestCtx.ui.setStatus("peek-agent", undefined);
-    }
-    activeRegistryDir = null;
-  });
-
-	// ── /peek-agent:rename ── overrides the display name at runtime ────
-	pi.registerCommand("peek-agent:rename", {
-		description: "Rename this peek-agent instance (overrides hash-derived name)",
-		handler: async (argsStr, ctx) => {
-			const newName = (argsStr ?? "").trim();
-			if (!newName) {
-				ctx.ui.notify("Usage: /peek-agent:rename <new-name>", "warning");
-				return;
-			}
-			const api = tryGetPeekAgentAPI();
-			if (!api) {
-				ctx.ui.notify("peek-agent not initialized yet", "error");
-				return;
-			}
-			api.setName(newName);
-			const count = await api.countPeers();
-			const theme = ctx.ui.theme;
-			if (theme) {
-				ctx.ui.setStatus("peek-agent",
-					`${theme.fg("dim", "peek")} ${theme.fg("accent", newName)} ${theme.fg("success", `(${count})`)}`);
-			}
-			ctx.ui.notify(`peek-agent renamed to ${newName}`, "info");
-		},
-	});
-
-	// ── /peek-agent:status ── debug: show self info + peer list ────────
-	pi.registerCommand("peek-agent:status", {
-		description: "Show peek-agent status: self info, registry dir, and online peers",
-		handler: async (_argsStr, ctx) => {
-			const api = tryGetPeekAgentAPI();
-			if (!api) {
-				ctx.ui.notify("peek-agent not initialized yet", "error");
-				return;
-			}
-			const self = api.getSelfInfo();
-			const peers = await api.listPeers();
-			const cfg = loadAgentConfig(ctx.cwd);
-
-			const lines = [
-				`peek-agent        ${self.name}`,
-				`session id        ${self.sessionId}`,
-				`pid               ${self.pid}`,
-				`socket            ${self.sockPath}`,
-				`model             ${self.model}`,
-				`cwd               ${self.cwd}`,
-				`git branch        ${self.gitBranch ?? "(none)"}`,
-				`since             ${self.since}`,
-				`last seen         ${self.lastSeen}`,
-				`status            ${self.status?.activity ?? "idle"}`,
-				`registry dir      ${resolveRegistryDir(cfg.registryDir)}`,
-				``,
-				`peers             ${peers.length} online`,
-			];
-
-			for (const p of peers) {
-				const branch = p.gitBranch ? ` (${p.gitBranch})` : "";
-				const act = p.status?.activity ? ` · ${p.status.activity}` : "";
-				const ambig = p.ambiguous ? " ⚠" : "";
-				const isSelf = p.sessionId === self.sessionId ? " ← self" : "";
-				lines.push(`  ${p.name}${branch}${act}${ambig}${isSelf}`);
-				lines.push(`    ${p.cwd}`);
-			}
-
-			ctx.ui.notify(lines.join("\n"), "info");
-		},
-	});
-
-	registerPeekTools(pi);
+  registerPeekTool(pi);
 }
