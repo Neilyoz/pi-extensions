@@ -17,9 +17,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import {
   copyToClipboard,
   DynamicBorder,
-  getAgentDir,
-  resolveModelScopeWithDiagnostics,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -208,34 +205,6 @@ export function parseModelRef(modelRef: string): { provider: string; modelId: st
   };
 }
 
-/**
- * Resolve the set of "scoped" model full-ids (`provider/id`) — the same models
- * pi surfaces in its built-in selector's "scoped" tab and Ctrl+P cycling.
- *
- * Fully official-API driven, no manual settings parsing:
- * - `SettingsManager.getEnabledModels()` reads the `enabledModels` scope
- *   patterns (global + project merge handled by pi).
- * - `resolveModelScopeWithDiagnostics()` expands those patterns (globs, aliases,
- *   thinking-level suffixes) into concrete models — identical to pi's scope tab.
- *
- * Any failure degrades to an empty set: the selector still works, just without
- * the scoped grouping.
- */
-async function resolveScopedModelIds(
-  modelRegistry: ExtensionContext["modelRegistry"],
-  cwd: string,
-): Promise<Set<string>> {
-  try {
-    const settings = SettingsManager.create(cwd, getAgentDir());
-    const patterns = settings.getEnabledModels();
-    if (!patterns || patterns.length === 0) return new Set();
-    const { scopedModels } = await resolveModelScopeWithDiagnostics(patterns, modelRegistry);
-    return new Set(scopedModels.map((s) => `${s.model.provider}/${s.model.id}`));
-  } catch {
-    return new Set();
-  }
-}
-
 async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   let models: Awaited<ReturnType<typeof ctx.modelRegistry.getAvailable>>;
   try {
@@ -250,7 +219,7 @@ async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promi
     return;
   }
 
-  const scopedIds = await resolveScopedModelIds(ctx.modelRegistry, ctx.cwd);
+  const scopedIds = new Set(ctx.scopedModels.map((s) => `${s.model.provider}/${s.model.id}`));
 
   // Scoped models float to the top with a ★ prefix (favorites); the rest follow
   // alphabetically. Within the scoped group we also sort alphabetically so the
