@@ -86,8 +86,25 @@ interface EntrySnap {
   message?: MsgSnap;
 }
 
-/** Sum cache-read tokens across all assistant messages, matching pi's own
- *  footer filtering (type === "message") and accumulation ("R14M"). */
+/** Sum cache-related usage across all assistant messages on the session.
+ *  Returns the same shape as UsageSnap so we can reuse cacheHitRate(). */
+function sumSessionUsage(ctx: { sessionManager: { getEntries(): unknown[] } }): UsageSnap {
+  let input = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  for (const entry of ctx.sessionManager.getEntries()) {
+    const e = entry as EntrySnap;
+    if (e.type !== "message" || e.message?.role !== "assistant" || !e.message.usage) continue;
+    input += e.message.usage.input ?? 0;
+    cacheRead += e.message.usage.cacheRead ?? 0;
+    cacheWrite += e.message.usage.cacheWrite ?? 0;
+  }
+  return { input, cacheRead, cacheWrite };
+}
+
+/** Sum cache-read tokens across all assistant messages — session total for
+ *  the "(14.0M)" display in the border. Kept separate from sumSessionUsage
+ *  to keep the hot path (agent_end) minimal. */
 function sumCacheRead(ctx: { sessionManager: { getEntries(): unknown[] } }): number {
   let total = 0;
   for (const entry of ctx.sessionManager.getEntries()) {
@@ -110,14 +127,31 @@ function latestAssistantUsage(ctx: { sessionManager: { getEntries(): unknown[] }
   return latest;
 }
 
-/** Cache hit rate for a single turn: cacheRead / (input + cacheRead +
- *  cacheWrite) × 100 — same formula pi's footer uses for "CHxx%".
- *  Returns undefined when there's no usage or no prompt tokens. */
+/** Cache hit rate for a single turn.
+ *
+ *  The `Usage.input` field has different semantics depending on the provider:
+ *  - OpenAI/DeepSeek: `input` = fresh non-cached tokens (promptTokens −
+ *    cacheRead − cacheWrite). Denominator = input + cacheRead + cacheWrite.
+ *  - Anthropic: `input` = total input_tokens (already includes cacheRead +
+ *    cacheWrite). Denominator = input alone (otherwise cache is counted twice).
+ *
+ *  We detect the convention: if `input` can account for both cacheRead and
+ *  cacheWrite (input >= cacheRead + cacheWrite), assume it is the total-input
+ *  convention (Anthropic). Otherwise assume the fresh-only convention
+ *  (OpenAI).  Heuristic, not perfect, but correct for both conventions in
+ *  practice; the real fix belongs in pi-ai where Usage is populated.
+ *
+ *  Returns undefined when there is no usage or no prompt tokens. */
 function cacheHitRate(u: UsageSnap | undefined): number | undefined {
   if (!u) return undefined;
-  const prompt = (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
-  if (prompt <= 0) return undefined;
-  return ((u.cacheRead ?? 0) / prompt) * 100;
+  const nonCached = u.input ?? 0;
+  const cached = (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+  // Anthropic convention: input already includes cacheRead + cacheWrite.
+  const totalPrompt = nonCached >= cached && cached > 0
+    ? nonCached
+    : nonCached + cached;
+  if (totalPrompt <= 0) return undefined;
+  return ((u.cacheRead ?? 0) / totalPrompt) * 100;
 }
 
 /** Format a token count for display: 14000000 → "14.0M", 132000 → "132.0k". */
@@ -300,6 +334,7 @@ export default function (pi: ExtensionAPI) {
       // Cache-read tokens — per-turn figure first, session total in parens,
       // then hit rate (pi's "CHxx%" formula). All refreshed at agent_end and
       // read from cache off the hot path.
+      // Session hit rate is available via /editor-shell:status.
       const cacheReadNow = _latestUsage?.cacheRead ?? 0;
       const hitRate = cacheHitRate(_latestUsage);
       const cachePart =
@@ -407,13 +442,17 @@ export default function (pi: ExtensionAPI) {
 
       lines.push("");
       lines.push("[cache totals]");
-      const tokens = sumCacheRead(ctx);
-      lines.push(`  cacheRead (session): ${tokens > 0 ? formatTokens(tokens) : "0"}`);
+      const sess = sumSessionUsage(ctx);
+      lines.push(`  session input: ${formatTokens(sess.input ?? 0)}`);
+      lines.push(`  session cacheRead: ${formatTokens(sess.cacheRead ?? 0)}`);
+      lines.push(`  session cacheWrite: ${formatTokens(sess.cacheWrite ?? 0)}`);
+      const sRate = cacheHitRate(sess);
+      lines.push(`  session hit rate: ${sRate != null ? `${sRate.toFixed(1)}%` : "n/a"}`);
       const latest = latestAssistantUsage(ctx);
       const now = latest?.cacheRead ?? 0;
-      lines.push(`  cacheRead (this turn): ${formatTokens(now)}`);
+      lines.push(`  this turn cacheRead: ${formatTokens(now)}`);
       const hr = cacheHitRate(latest);
-      lines.push(`  hit rate: ${hr != null ? `${hr.toFixed(1)}%` : "n/a"}`);
+      lines.push(`  this turn hit rate: ${hr != null ? `${hr.toFixed(1)}%` : "n/a"}`);
 
       lines.push("");
       lines.push(`[context] cwd: ${ctx.cwd}`);

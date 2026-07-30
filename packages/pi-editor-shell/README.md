@@ -5,7 +5,7 @@ Replaces pi's default editor and status bar with a unified rounded-corner shell 
 ## What shows up where
 
 - **Top border** — `  model ·  thinking-level ` (left) + pinned extension statuses (right, via `pinnedStatus` config)
-- **Bottom border** — `  ctx NN%/NNk|N.NM · ⚡ cacheRead (total)  hitRate% ` (left) + `  ~/Projects (main +2 ~1) ` (right, shows git branch + dirty state when in a repo)
+- **Bottom border** — `  ctx NN%/NNk|N.NM · ⚡ cacheRead (total)  hitRate% ` (left) + `  ~/Projects (main +2 ~1) ` (right, shows git branch + dirty state when in a repo). Session hit rate via `/editor-shell:status`.
 - **Below shell** — Auto-wrapping extension status line (all `setStatus` entries not pinned to the top)
 - **Border color** follows pi's thinking-level / bash-mode indicator automatically.
 
