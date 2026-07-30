@@ -1102,7 +1102,7 @@ class AskUserPanel implements Component, Focusable {
 // ────────────────────────────────────────────────────────────────────────────
 
 class AskUserResultView implements Component {
-  private questions: ReadonlyArray<Pick<Question, "id" | "header" | "tab">>;
+  private questions: ReadonlyArray<Pick<Question, "id" | "header" | "tab" | "prompt">>;
   private result: AskUserResult;
   private theme: Theme;
   private expanded = false;
@@ -1110,7 +1110,7 @@ class AskUserResultView implements Component {
   private cachedLines?: string[];
 
   constructor(
-    questions: ReadonlyArray<Pick<Question, "id" | "header" | "tab">>,
+    questions: ReadonlyArray<Pick<Question, "id" | "header" | "tab" | "prompt">>,
     result: AskUserResult,
     theme: Theme,
   ) {
@@ -1163,14 +1163,22 @@ class AskUserResultView implements Component {
   private renderCollapsed(width: number): string[] {
     const th = this.theme;
     const { icon, color, phrase } = this.getStatus();
-    const head = `${th.fg(color, icon)} ${th.fg(color, phrase)}`;
-    const sep = th.fg("dim", ": ");
-    const pairs = this.questions.map((q) => {
+    const lines: string[] = [];
+    // Overview row: status icon + phrase in the status color. It is a summary
+    // HEADER, not a list entry — so the Q&A list beneath is indented + dimmed
+    // to read as a subordinate block rather than a peer of the overview.
+    lines.push(truncForDisplay(`${th.fg(color, icon)} ${th.fg(color, phrase)}`, width));
+    const indent = "  ";
+    for (const q of this.questions) {
       const ans = this.result.answers.find((a) => a.id === q.id);
-      return `${q.header}=${this.formatAnswer(ans).text}`;
-    });
-    const body = pairs.join(th.fg("dim", " · "));
-    return [th.fg("dim", truncForDisplay(`${head}${sep}${body}`, width))];
+      const av = this.formatAnswer(ans);
+      // Header + separator stay dim; the answer keeps its semantic color
+      // (e.g. warning for skipped) so status is still readable at a glance.
+      const qPart = th.fg("dim", `${q.header} = `);
+      const aPart = th.fg(av.color, av.text);
+      lines.push(truncForDisplay(`${indent}${qPart}${aPart}`, width));
+    }
+    return lines;
   }
 
   private renderCard(width: number): string[] {
@@ -1202,7 +1210,18 @@ class AskUserResultView implements Component {
     };
     for (const q of this.questions) {
       const ans = this.result.answers.find((a) => a.id === q.id);
-      lines.push(truncateToWidth(th.fg("muted", q.header), width));
+      // Header: bold + text color so it reads as the question's subject. Muted
+      // made it as easy to skim past as a tab label, which is why short headers
+      // looked like bare tags. The prompt body — when present — sits directly
+      // beneath in muted, giving the full question context needed to review.
+      lines.push(truncateToWidth(th.fg("text", th.bold(q.header)), width));
+      if (q.prompt) {
+        const promptIndent = "  ";
+        const promptW = Math.max(8, width - visibleWidth(promptIndent));
+        for (const w of wrapTextWithAnsi(th.fg("muted", q.prompt), promptW)) {
+          lines.push(`${promptIndent}${w}`);
+        }
+      }
       if (!ans) {
         lines.push(`${indent}${th.fg("dim", "(no answer)")}`);
       } else if (ans.kind === "skipped") {
