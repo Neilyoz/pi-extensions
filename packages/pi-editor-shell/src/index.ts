@@ -413,6 +413,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("editor-shell:status", {
     description: "Show editor-shell debug state: status keys, pinned config, cache totals",
     handler: async (_args, ctx) => {
+      // Refresh git dirty first so the status output reflects the current
+      // working tree — the event-driven cache is otherwise only updated at
+      // session_start / turn_end (see refreshGitDirty).
+      await new Promise<void>((resolve) => refreshGitDirty(ctx.cwd, resolve));
       const lines: string[] = [];
 
       lines.push("[editor-shell config]");
