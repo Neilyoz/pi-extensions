@@ -31,7 +31,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { loadConfig } from "./config.ts";
 import { PathManager } from "./path-manager.ts";
 import { resolveTarget, toPosix } from "./paths.ts";
-import { extractBashTargets } from "./bash-extract.ts";
+import { extractBashTargetsDetailed, type ExtractedTarget } from "./bash-extract.ts";
 import { DEFAULT_CONFIG, type AccessMode, type AuthResult, type SupportedTool } from "./types.ts";
 import { AuthPanel } from "./auth-panel.ts";
 
@@ -105,7 +105,7 @@ function denyReason(note?: string): string {
  */
 async function promptDecision(
   toolName: string,
-  violations: string[],
+  violations: ExtractedTarget[],
   ctx: ExtensionContext,
 ): Promise<AuthResult> {
   const header = toolName === "bash" ? "bash command" : `${toolName}`;
@@ -155,11 +155,11 @@ export default function (pi: ExtensionAPI) {
     // 1. Extract the targets this call wants to reach.
     //    write/edit: the single `path` argument — exact.
     //    bash:       heuristic scan of the command string (escaping candidates only).
-    let targets: string[];
+    let targets: ExtractedTarget[];
     if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
-      targets = [resolveTarget(event.input.path, cwd)];
+      targets = [{ path: resolveTarget(event.input.path, cwd) }];
     } else if (isToolCallEventType("bash", event)) {
-      targets = extractBashTargets(event.input.command, cwd);
+      targets = extractBashTargetsDetailed(event.input.command, cwd);
     } else {
       return; // tool not understood here — nothing to gate
     }
@@ -169,9 +169,9 @@ export default function (pi: ExtensionAPI) {
     //    (config deniedPaths or a remembered always-deny); outside means no
     //    allow rule covers it and it needs authorization.
     const denyNotes: string[] = [];
-    const outside: string[] = [];
+    const outside: ExtractedTarget[] = [];
     for (const target of targets) {
-      const d = pm.decide(target);
+      const d = pm.decide(target.path);
       if (d.kind === "deny") denyNotes.push(d.reason ?? "");
       else if (d.kind === "outside") outside.push(target);
     }
@@ -193,14 +193,14 @@ export default function (pi: ExtensionAPI) {
     if (state.mode === "deny") {
       return {
         block: true,
-        reason: `Blocked by access-denied (deny mode): ${formatPaths(outside)}`,
+        reason: `Blocked by access-denied (deny mode): ${formatPaths(outside.map((t) => t.path))}`,
       };
     }
 
     // prompt mode — custom panels are TUI-only. RPC has UI helpers, but not
     // ctx.ui.custom(); print/json also cannot authorize interactively.
     if (ctx.mode !== "tui") {
-      return { block: true, reason: `Blocked (TUI authorization unavailable): ${formatPaths(outside)}` };
+      return { block: true, reason: `Blocked (TUI authorization unavailable): ${formatPaths(outside.map((t) => t.path))}` };
     }
 
     // 6. Prompt for the outside paths.

@@ -37,6 +37,7 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { AuthResult, Choice } from "./types.ts";
+import type { ExtractedTarget } from "./bash-extract.ts";
 
 export interface TuiLike {
   requestRender(): void;
@@ -78,6 +79,7 @@ export class AuthPanel implements Component, Focusable {
   focused = false;
 
   private paths: string[];
+  private violations: ExtractedTarget[];
   private header: string;
   private tui: TuiLike;
   private theme: Theme;
@@ -94,13 +96,14 @@ export class AuthPanel implements Component, Focusable {
   private cachedWidth?: number;
   private cachedLines?: string[];
 
-  constructor(paths: string[], header: string, tui: TuiLike, theme: Theme, cb: AuthPanelCallbacks) {
-    this.paths = paths;
+  constructor(violations: ExtractedTarget[], header: string, tui: TuiLike, theme: Theme, cb: AuthPanelCallbacks) {
+    this.violations = violations;
+    this.paths = violations.map((v) => v.path);
     this.header = header;
     this.tui = tui;
     this.theme = theme;
     this.cb = cb;
-    this.choices = new Map(paths.map((p) => [p, "allow" as Choice]));
+    this.choices = new Map(this.paths.map((p) => [p, "allow" as Choice]));
 
     const editorTheme: EditorTheme = {
       borderColor: (s) => theme.fg("accent", s),
@@ -279,6 +282,15 @@ export class AuthPanel implements Component, Focusable {
     }
     if (n > this.viewportH) {
       lines.push(row(th.fg("dim", ` ↑↓/PgUp/PgDn scroll · ${start + 1}-${end}/${n}`)));
+    }
+
+    // Source preview: the leaf command behind the focused path — `find /` vs
+    // `rm -rf /` — so the choice is informed. Bash only; write/edit have none.
+    const focused = this.violations[this.cursor];
+    if (focused?.source) {
+      const src = truncateToWidth(focused.source, Math.max(10, innerW - 10), "…");
+      lines.push(row("")); // blank line: separate from the (dim) path list
+      lines.push(row(` ${th.fg("accent", "source:")} ${th.fg("text", src)}`));
     }
 
     lines.push(th.fg("border", `├${"─".repeat(innerW)}┤`));

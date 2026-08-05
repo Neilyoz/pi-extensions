@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { extractBashTargets, isWindowsNativePath } from "./bash-extract.ts";
+import { extractBashTargets, extractBashTargetsDetailed, isWindowsNativePath } from "./bash-extract.ts";
 import { resolveTarget } from "./paths.ts";
 import { PathManager } from "./path-manager.ts";
 
@@ -299,5 +299,55 @@ describe("extractBashTargets: Windows behavior (Git Bash / MSYS)", { skip: SKIP_
   test("multi-line commit message is not mined for paths (win32)", () => {
     const cmd = 'git commit -m "see /c/old for context"';
     assert.deepEqual(extractBashTargets(cmd, CWD), []);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// 4. Leaf-command source tracking (extractBashTargetsDetailed)
+//    Each path is paired with the leaf command that produced it, so the auth
+//    panel can show "find /" rather than just "/". POSIX-only (path resolution).
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("extractBashTargetsDetailed: leaf-command source", { skip: SKIP_POSIX }, () => {
+  const CWD = "/home/me/proj";
+
+  test("source is the verbatim leaf command text", () => {
+    const v = extractBashTargetsDetailed("find / -name '*.log'", CWD);
+    assert.equal(v[0].path, "/");
+    assert.equal(v[0].source, "find / -name '*.log'");
+  });
+
+  test("source distinguishes find from rm at the same path", () => {
+    assert.equal(extractBashTargetsDetailed("find /", CWD)[0].source, "find /");
+    assert.equal(extractBashTargetsDetailed("rm -rf /", CWD)[0].source, "rm -rf /");
+  });
+
+  test("each command in a list attributes its own paths", () => {
+    const byPath = new Map(
+      extractBashTargetsDetailed("find /; rm /old/data", CWD).map((t) => [t.path, t.source]),
+    );
+    assert.equal(byPath.get("/"), "find /");
+    assert.equal(byPath.get(path.normalize("/old/data")), "rm /old/data");
+  });
+
+  test("nested command substitution keeps its own source", () => {
+    const v = extractBashTargetsDetailed('echo "$(cat /etc/passwd)"', CWD);
+    assert.equal(v[0].source, "cat /etc/passwd");
+  });
+
+  test("each stage of a pipeline keeps its own source", () => {
+    const v = extractBashTargetsDetailed("cat /a | grep x | sort", CWD);
+    assert.equal(v.find((t) => t.path === "/a")?.source, "cat /a");
+  });
+
+  test("control-flow body commands keep their own source", () => {
+    const byPath = new Map(
+      extractBashTargetsDetailed("if [ -f /etc/x ]; then rm /tmp/y; fi", CWD).map((t) => [
+        t.path,
+        t.source,
+      ]),
+    );
+    assert.equal(byPath.get("/etc/x"), "[ -f /etc/x ]");
+    assert.equal(byPath.get("/tmp/y"), "rm /tmp/y");
   });
 });
