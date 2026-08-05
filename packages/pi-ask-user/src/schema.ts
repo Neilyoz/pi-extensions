@@ -28,7 +28,7 @@ const QuestionSchema = Type.Object({
   }),
   tab: Type.String({
     description:
-      'Short keyword that identifies this question. Shown on the tab bar and returned in the result as the answer\'s prefix. Write it in the user\'s language (e.g. "数据库" or "布局" in a Chinese conversation, "Database" or "Layout" in English), not as a programmatic identifier like "db_choice". Must be unique across questions in one call.',
+      'Short keyword identifying this question — it labels the tab bar so the user can tell questions apart and navigate between them, and the answer for this question is keyed by this tab. Write it in the user\'s language (e.g. "数据库" or "布局" in a Chinese conversation, "Database" or "Layout" in English), not as a programmatic identifier like "db_choice". Must be unique across questions in one call.',
   }),
   prompt: Type.Optional(
     Type.String({ description: "Optional longer body text shown under the header" }),
