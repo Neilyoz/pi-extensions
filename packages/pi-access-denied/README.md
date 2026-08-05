@@ -6,7 +6,7 @@ Behavior guard for `write` / `edit` / `bash` path choices. It nudges an agent ba
 
 LLMs sometimes choose unnecessarily broad or misplaced paths: `find /` instead of searching the project, an application data directory remembered from training data, or a home-directory output path when the result belongs in the repository. This extension catches common forms of those calls and either asks you, redirects the agent with a reason, or blocks the call according to your selected mode.
 
-It is a **behavior-correction layer**, not a security sandbox. Bash matching is deliberately best-effort and biased toward low noise: missing an unusual path expression is preferable to interrupting ordinary commands with false positives. Use OS/container isolation when access must be enforced against deliberate or comprehensive evasion.
+It is a **behavior-correction layer**, not a security sandbox. Bash commands are parsed structurally (not flat-tokenized) so that quoted text and nested commands are handled correctly; matching remains deliberately best-effort and biased toward low noise — missing an unusual path expression is preferable to interrupting ordinary commands with false positives. Use OS/container isolation when access must be enforced against deliberate or comprehensive evasion.
 
 > Pi's built-in "trusted projects" controls whether project-local config, resources, and extensions may load. This extension instead influences agent tool behavior after loading; it does not reuse or replace pi's trust model.
 
@@ -134,16 +134,16 @@ Use `allowedPaths` to add your own always-safe roots (e.g. a log dir you always 
 **In-bounds** = current project `cwd` + configured `allowedPaths` + built-in safe paths. A target path is `resolve`d + `normalize`d and run through the PathManager (longest-prefix-match across all rule layers — see [Rule resolution](#rule-resolution-longest-prefix-match)). A matching allow rule passes it; a matching deny rule blocks it; an uncovered path triggers authorization.
 
 - **`write` / `edit`**: takes the `path` argument directly — exact.
-- **`bash`**: heuristic token scan of the command string; only **clearly escaping** tokens are judged:
+- **`bash`**: the command string is parsed into a structural AST ([unbash](https://github.com/webpro-nl/unbash)) and walked recursively; only **clearly escaping** tokens are judged:
   - absolute paths starting with `/`
   - `~` / `$HOME` prefixes
   - `..` parent climbs (`../x`, `a/..`, `a/../b`)
 
   Relative paths under `cwd` (e.g. `src/foo.ts`, `cat README.md`) are left alone by default.
 
-**Quoted strings and heredoc bodies are treated as data, not paths.** This intentionally reduces false positives in commands containing code, regular expressions, or embedded text. Consequently, a quoted real path may pass through; that trade-off is consistent with this plugin's behavior-correction purpose.
+**Quoted strings are data, not paths.** A quoted run (single/double/ANSI-C) is an argument's value — e.g. a multi-line `git commit -m "…"` message — so its inner text is never mined for path tokens. This is what keeps the gate quiet instead of flagging every `/…` inside a commit message and training you to hit "always allow". Command and process substitutions still execute inside quotes (`"$(rm /x)"`), so they are recursed into regardless of quoting context. Heredoc bodies are stdin data and not scanned; an *unquoted* heredoc's `$(…)` substitutions do execute and are caught.
 
-**Backslash escapes are honored inside unquoted tokens.** `Agent\ Workspace` is one token (a path containing a literal space), not two — the `\` + next char is kept together and the backslash stripped, so `/a/Agent\ Workspace/b` is treated as `/a/Agent Workspace/b`. This covers `\ ` (space), `\;`, `\(`, `\|`, even `\\` → `\`. It applies only to **unquoted** tokens; inside quotes the backslash is left untouched (quotes already protect the content).
+**Backslash escapes are resolved by the parser.** `/a/Agent\ Workspace/b` is one token whose dequoted value is `/a/Agent Workspace/b`. This covers `\ `, `\;`, `\(`, `\|`, `\\`, etc.
 
 Note: read-only commands that traverse outside `cwd` (like `find /`, `ls /etc`) are also gated — bash access outside the project is blocked regardless of read/write, by design.
 
@@ -161,13 +161,11 @@ pi runs commands through **Git Bash** on Windows, so bash command strings arrive
 
 ## Limitations (bash heuristic)
 
-A bash command is an arbitrary shell string, so **perfect static path analysis is impossible**. Known blind spots:
+A bash command is an arbitrary shell string, so **perfect static path analysis is impossible**. The structural parse recurses into command substitutions `$(…)`, process substitutions `<(…)`, subshells, pipelines, and every control-flow body (`if`/`for`/`while`/`case`/…), but these blind spots remain:
 
-- **Unexpanded `$VAR`** (other than `$HOME`) can't be analyzed statically and is skipped (allowed). e.g. `cat $SECRET_FILE`.
-- **Paths produced by command substitution / pipelines** are invisible, e.g. `cat $(somecmd)`, `echo {a,b}` brace expansion.
-- An assignment like `X=/etc/passwd` generally triggers no real access and is skipped.
-- **Quoted real paths are no longer caught** as a side effect of treating quoted runs as data: `cat '/etc/passwd'` passes through even though `cat /etc/passwd` (bare) is blocked. The bare-path check still covers the common case; this only loosens quoted-path arguments.
-- Complex quoting can in theory cause misjudgment. Plain backslash escapes in unquoted tokens are handled (see Path resolution), but nested/layered quoting (`"'$x'"`) is not.
+- **Unexpanded `$VAR`** (other than `$HOME`/`${HOME}`) can't be analyzed statically and is skipped (allowed). e.g. `cat $SECRET_FILE`.
+- **Quoted real paths are treated as data.** `cat '/etc/passwd'` passes through even though `cat /etc/passwd` (bare) is blocked — a quoted run is an argument value, and static analysis cannot know whether a given program opens it as a file. The bare-path check covers the common case.
+- An assignment like `X=/etc/passwd` is data, not file access, and is skipped (nested `X=$(…)` still recurses).
 
 This is intentional best-effort matching, not an absolute sandbox. The goal is to correct common agent behavior with little noise, not to understand every possible shell expansion. For enforced isolation, use a container or remote execution boundary.
 

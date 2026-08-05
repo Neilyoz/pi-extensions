@@ -26,5 +26,8 @@
     "url": "https://github.com/d3ara1n/pi-extensions",
     "directory": "packages/pi-access-denied"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "unbash": "^4.0.6"
+  }
 }

@@ -1,23 +1,15 @@
 /**
- * Path primitives + bash target extraction for pi-access-denied.
+ * Path normalization primitives for pi-access-denied.
  *
- * This module is PURE: no policy, no decision logic. It owns two concerns:
+ * This module is PURE: no policy, no decision logic. It owns separator-agnostic
+ * comparison (toPosix/underRoot), home expansion, MSYS drive translation,
+ * Windows device-name detection, and target resolution — the building blocks
+ * the PathManager (path-manager.ts) compares targets against, and that
+ * bash-extract.ts resolves extracted candidates with.
  *
- *   1. **Path normalization primitives** — separator-agnostic comparison
- *      (toPosix/underRoot), home expansion, MSYS drive translation, Windows
- *      device-name detection. These are the building blocks the PathManager
- *      (path-manager.ts) uses to compare a target against its rule set.
- *
- *   2. **bash target extraction** — given a free-form command string, recover
- *      the absolute paths it appears to touch OUTSIDE the cwd (absolute
- *      paths, `~`, `$HOME`, and `..` traversals). This is a deliberately
- *      conservative heuristic (see README "Limitations"); it does NOT decide
- *      whether those paths are allowed — that is the PathManager's job.
- *
- * The old allowlist/safe/remember helpers lived here too, but they encoded
- * POLICY (what's safe, what's outside, what's remembered). They have been
- * collapsed into the PathManager's single longest-prefix-match `decide()`,
- * so there is now exactly one place that decides access.
+ * Bash target extraction lives in bash-extract.ts. Access policy (what's safe,
+ * outside, or remembered) lives in the PathManager's single longest-prefix-match
+ * `decide()` — exactly one place decides access.
  */
 
 import * as fs from "node:fs";
@@ -229,153 +221,4 @@ export function resolveTarget(token: string, cwd: string): string {
   if (msys) return path.normalize(msys);
   if (path.isAbsolute(token)) return path.normalize(token);
   return path.resolve(cwd, token);
-}
-
-// ── bash target extraction (pure syntax; NO policy) ─────────────────────────
-//
-// A bash command is an arbitrary shell string, so perfect static path analysis
-// is impossible. The extractor flags tokens that CLEARLY escape the project
-// tree (absolute paths, `~`, `$HOME`, and `..` traversals). Relative paths
-// that stay under cwd (e.g. `src/foo.ts`) are left alone because the shell
-// runs inside cwd. See README "Limitations" for known blind spots.
-//
-// The extractor does NOT decide whether a flagged path is allowed/denied —
-// it merely returns the resolved candidate paths. Classification is the
-// PathManager's job, so policy lives in exactly one place.
-
-function stripQuotes(t: string): string {
-  if (
-    t.length >= 2 &&
-    ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))
-  ) {
-    return t.slice(1, -1);
-  }
-  return t;
-}
-
-/**
- * Strip a single backslash from every `\X` escape: `\ ` -> ` `, `\;` -> `;`, `\\` -> `\`.
- * Intended for POSIX shell escapes. Callers must first bypass it for Windows-native
- * paths (see {@link isWindowsNativePath}), whose backslashes are path separators
- * rather than escapes.
- */
-function unescapeBackslash(t: string): string {
-  return t.replace(/\\(.)/g, "$1");
-}
-
-const WIN_NATIVE_RE = /^[A-Za-z]:[\\/]/;
-
-/**
- * True if `token` is a Windows-native absolute path with a drive letter
- * (`C:\Users\me`, `D:/data`). Such tokens use backslash (or, under Git Bash,
- * forward slash) as a path *separator*, not a shell escape — so they must reach
- * {@link resolveTarget} / `path.isAbsolute` with separators intact. Routing them
- * through {@link unescapeBackslash} first would collapse `C:\Users\me` to
- * `C:Usersme`, which is neither absolute nor a resolvable path, letting it slip
- * past the gate entirely.
- *
- * Pure and platform-independent: a drive-letter prefix is unambiguously
- * Windows regardless of host OS, so this is unit-testable on any platform.
- */
-export function isWindowsNativePath(token: string): boolean {
-  return WIN_NATIVE_RE.test(token);
-}
-
-/** Does this token look like it could escape cwd? */
-function isEscapingCandidate(token: string): boolean {
-  if (token.startsWith("/") || path.isAbsolute(token)) return true; // absolute (posix + windows native)
-  if (token === "~" || token.startsWith("~/")) return true; // home
-  if (token === "$HOME" || token.startsWith("$HOME/")) return true; // home
-  if (token === ".." || token.startsWith("../")) return true; // parent climb
-  if (/\/\.\.(\/|$)/.test(token)) return true; // embedded parent: a/.. or a/../b
-  return false;
-}
-
-// Shell token splitter. Separators: whitespace, quotes, and shell metachars
-// `; | & < > ( ) { }`. Quoted runs are kept whole so paths with spaces survive.
-// A backslash escape (`\X`) is consumed inside a token via the `\\.` branch, so
-// `/a/Agent\ Workspace/b` stays ONE token instead of splitting on the escaped
-// space. The escape is later stripped by {@link unescapeBackslash}.
-//
-// `=` is intentionally NOT a separator: splitting there would break the bash
-// regex-match operator `=~` (the `~` half would detach and be mistaken for a
-// home path, expanding to $HOME) and detach assignment values (`X=/etc/passwd`
-// → bare `/etc/passwd`). Escaping detection only inspects a token's PREFIX
-// (`/`, `~`, `$HOME`, `..`), so an `=`-bearing token is inert unless it itself
-// begins with one of those prefixes — keeping it whole can only reduce
-// false positives, never create false negatives.
-const TOKEN_RE = /"[^"]*"|'[^']*'|(?:\\.|[^\s"'`;|&<>(){}])+/g;
-
-// Heredoc opener: `<<DELIM`, `<<-DELIM`, `<<'DELIM'`, `<<"DELIM"`, `<<\DELIM`.
-// Captures the bare delimiter word (quotes/escape stripped) so we can find the
-// matching terminator line and skip the body. Here-strings (`<<<`) don't match
-// because the third `<` fails the `[A-Za-z_]` start requirement.
-const HEREDOC_RE = /<<-?\s*(?:\\|["']?)([A-Za-z_][\w-]*)["']?/;
-
-/**
- * Scan a single command line's tokens for escaping-path candidates and add
- * their resolved absolute form to `targets`. Shared by the per-line loop in
- * {@link extractBashTargets}.
- *
- * Quoted tokens are **skipped**: a quoted run is a data literal passed to a
- * program (e.g. `echo '...'`, `sed 's|a|b|g'`, `printf '%s' ...`), not a path
- * the command opens. Treating such literals as paths was the root cause of
- * code-content false positives — e.g. a JS block comment at the start of a
- * quoted string was mistaken for absolute path `/`.
- */
-function scanLine(line: string, cwd: string, targets: Set<string>): void {
-  for (const raw of line.matchAll(TOKEN_RE)) {
-    const r = raw[0];
-    // Quoted run = data literal, not a path. See method comment.
-    if (r[0] === '"' || r[0] === "'") continue;
-    const stripped = stripQuotes(r);
-    if (!stripped) continue;
-    // Windows-native paths (C:\...) keep backslashes as separators; any other
-    // token unescapes shell backslash-escapes (\ , \;, \\, \$HOME).
-    const token = isWindowsNativePath(stripped) ? stripped : unescapeBackslash(stripped);
-    if (token.startsWith("-")) continue; // option flag
-    // Unresolved $VAR (other than $HOME) can't be analyzed statically — skip.
-    if (token.includes("$") && !token.startsWith("$HOME")) continue;
-    if (!isEscapingCandidate(token)) continue;
-    targets.add(resolveTarget(token, cwd));
-  }
-}
-
-/** If `line` opens a heredoc (`<<DELIM` forms), return the bare delimiter word. */
-function heredocDelim(line: string): string | null {
-  const m = line.match(HEREDOC_RE);
-  return m ? m[1] : null;
-}
-
-/**
- * Extract the de-duplicated set of normalized absolute paths a bash command
- * APPEARS to reach OUTSIDE cwd. Heuristic — see README for known blind spots.
- *
- * This is PURE EXTRACTION: it returns every escaping-looking candidate without
- * judging whether it is allowed or denied. The caller (index.ts) runs each
- * result through `PathManager.decide()` to classify it. Keeping extraction and
- * policy separate means the tokenizing heuristic and the access rules can each
- * evolve without entangling the other.
- *
- * Processes the command **line by line** so it can skip heredoc bodies: a line
- * that opens `<<DELIM` flips on body-skipping until the matching `DELIM`
- * terminator line. Inside the body, lines are stdin data, not paths. This is
- * what stops a `cat > f <<'EOF' ... code ... EOF` from flagging every
- * `/...` token in the embedded code.
- */
-export function extractBashTargets(command: string, cwd: string): string[] {
-  const targets = new Set<string>();
-  let pendingDelim: string | null = null;
-  for (const line of command.split("\n")) {
-    if (pendingDelim !== null) {
-      // Heredoc body: stdin data, never a path. Terminated by a line equal to
-      // the delimiter; `<<-` permits leading tabs, so strip those before compare.
-      if (line.replace(/^\t+/, "").trim() === pendingDelim) pendingDelim = null;
-      continue;
-    }
-    const delim = heredocDelim(line);
-    if (delim) pendingDelim = delim;
-    scanLine(line, cwd, targets);
-  }
-  return [...targets];
 }

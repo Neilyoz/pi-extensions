@@ -30,7 +30,8 @@ import {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { loadConfig } from "./config.ts";
 import { PathManager } from "./path-manager.ts";
-import { extractBashTargets, resolveTarget, toPosix } from "./paths.ts";
+import { resolveTarget, toPosix } from "./paths.ts";
+import { extractBashTargets } from "./bash-extract.ts";
 import { DEFAULT_CONFIG, type AccessMode, type AuthResult, type SupportedTool } from "./types.ts";
 import { AuthPanel } from "./auth-panel.ts";
 
