@@ -31,6 +31,7 @@
 import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
+  Text,
   Editor,
   type EditorTheme,
   type Focusable,
@@ -1389,6 +1390,17 @@ export default function askUserExtension(pi: ExtensionAPI) {
       };
     },
     renderResult(result, options, theme, context) {
+      // Pre-execute failures (schema validation rejected the arguments, tool
+      // not found, etc.): the core skips execute() and emits an error result —
+      // content carries the failure message, isError is true. Show the failure
+      // headline in red (mirrors the built-in tools' error rendering) instead of
+      // the AskUserResultView, which would default `cancelled` to true and
+      // misrender a validation failure as "user cancelled".
+      if (context.isError) {
+        const block = result.content?.[0];
+        const t = block?.type === "text" ? block.text.split("\n")[0] : "Error";
+        return new Text(theme.fg("error", t), 0, 0);
+      }
       // Rebuild the per-call ids used by the interactive panel. The static
       // tool arguments retain caller-supplied tabs only, while details carries
       // answers keyed by these stable ids.
