@@ -28,7 +28,29 @@ Or add to `~/.pi/agent/settings.json`:
   ]
 }
 ```
+```
 
+## Configuration
+
+The collapse/expand toggle key is configurable via the `askUser` block in
+`~/.pi/agent/settings.json` (or a project-level `.pi/settings.json`, which
+replaces the global block entirely):
+
+```jsonc
+{
+  "askUser": {
+    "toggleKey": "ctrl+\\"
+  }
+}
+```
+
+`toggleKey` uses the same key format as `~/.pi/agent/keybindings.json` (e.g.
+`ctrl+\\`, `alt+\\`, `f1`, `shift+tab`). An invalid value silently falls back
+to the default. Changes apply on the next `ask_user` call — no reload needed.
+
+All other panel keys (`↑` `↓`, `Space`, `Enter`, `Tab`, `Esc`) are fixed.
+
+## Symbols
 ## Symbols
 
 The panel uses three glyphs:
@@ -83,4 +105,4 @@ After the last question, a **review screen** lists every question with your answ
 | `Tab` / `Shift+Tab` | Next / previous question, **cycling** (last → first) |
 | `→` / `←` | Next / previous question, but **stop at the boundary** (no cycle) — safer when there are many questions |
 | `Esc` | Cancel (or exit the custom-input editor without saving) |
-| `Ctrl+\` | Collapse / expand the panel |
+| `Ctrl+\` | Collapse / expand the panel (configurable — see [Configuration](#configuration)) |

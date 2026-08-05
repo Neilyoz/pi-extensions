@@ -36,6 +36,7 @@ import {
   type Focusable,
   Key,
   matchesKey,
+  type KeyId,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -70,10 +71,10 @@ import {
   type Question,
   type RenderOption,
   type TabState,
-  TOGGLE_HINT,
-  TOGGLE_KEY,
   type TuiLike,
 } from "./types.ts";
+
+import { DEFAULT_CONFIG, formatKeyId, loadConfig } from "./config.ts";
 
 // ────────────────────────────────────────────────────────────────────────────
 // The overlay component
@@ -86,6 +87,8 @@ class AskUserPanel implements Component, Focusable {
   private theme: Theme;
   private tui: TuiLike;
   private cb: PanelCallbacks;
+  /** KeyId for the collapse/expand toggle (user-configurable via settings). */
+  private toggleKey: string;
 
   // ── state ──
   private currentTab = 0;
@@ -114,11 +117,19 @@ class AskUserPanel implements Component, Focusable {
   private cachedWidth?: number;
   private cachedLines?: string[];
 
-  constructor(questions: Question[], tui: TuiLike, theme: Theme, cb: PanelCallbacks) {
+  constructor(
+    questions: Question[],
+    tui: TuiLike,
+    theme: Theme,
+    cb: PanelCallbacks,
+    /** KeyId for the collapse/expand toggle; user-configurable via settings. */
+    toggleKey: string = DEFAULT_CONFIG.toggleKey,
+  ) {
     this.questions = questions;
     this.tui = tui;
     this.theme = theme;
     this.cb = cb;
+    this.toggleKey = toggleKey;
 
     const editorTheme: EditorTheme = {
       borderColor: (s) => theme.fg("accent", s),
@@ -344,7 +355,7 @@ class AskUserPanel implements Component, Focusable {
     }
 
     // 2. Collapse toggle (global, any tab).
-    if (matchesKey(data, TOGGLE_KEY)) {
+    if (matchesKey(data, this.toggleKey as KeyId)) {
       this.setCollapsed(!this.collapsed);
       return;
     }
@@ -678,7 +689,7 @@ class AskUserPanel implements Component, Focusable {
     });
     const reviewPart = this.isReviewTab ? th.fg("accent", "Review▸") : th.fg("dim", "Review○");
     const tabsPart = [...qParts, reviewPart].join(th.fg("dim", " "));
-    const inner = `${tabsPart}  ${th.fg("dim", ` ${TOGGLE_HINT} expand `)}${th.fg("dim", " Esc cancel ")}`;
+    const inner = `${tabsPart}  ${th.fg("dim", ` ${formatKeyId(this.toggleKey)} expand `)}${th.fg("dim", " Esc cancel ")}`;
     const line =
       th.fg("border", "│") +
       inner +
@@ -788,8 +799,8 @@ class AskUserPanel implements Component, Focusable {
         ? th.fg("dim", ` ${doneCount}/${this.questions.length} answered · `)
         : th.fg("dim", " ");
     const hint = multi
-      ? `${TOGGLE_HINT} collapse · ↑↓ move · Space toggle · Enter confirm · Esc cancel`
-      : `${TOGGLE_HINT} collapse · ↑↓ move · Space select · Enter confirm · Esc cancel`;
+      ? `${formatKeyId(this.toggleKey)} collapse · ↑↓ move · Space toggle · Enter confirm · Esc cancel`
+      : `${formatKeyId(this.toggleKey)} collapse · ↑↓ move · Space select · Enter confirm · Esc cancel`;
     lines.push(row(`${left}${th.fg("dim", hint)}`));
     lines.push(th.fg("border", `╰${"─".repeat(innerW)}╯`));
     return lines;
@@ -1295,12 +1306,16 @@ export default function askUserExtension(pi: ExtensionAPI) {
           preview: o.preview === undefined ? undefined : sanitizeMultiline(o.preview),
         })),
       }));
+      // Collapse/expand toggle key is user-configurable via the `askUser`
+      // settings block (default ctrl+\\). Loaded per call so edits apply
+      // without a reload.
+      const cfg = loadConfig(ctx.cwd);
 
       const result = await ctx.ui.custom<AskUserResult>(
         (tui, theme, _kb, done) => {
           return new AskUserPanel(questions, tui, theme, {
             onResult: (r) => done(r),
-          });
+          }, cfg.toggleKey);
         },
         {
           // overlay:false renders the panel into pi's bottom editorContainer slot

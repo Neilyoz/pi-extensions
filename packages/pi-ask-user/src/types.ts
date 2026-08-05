@@ -2,7 +2,6 @@
  * Shared types and icon constants for pi-ask-user.
  */
 
-import { Key } from "@earendil-works/pi-tui";
 import type { Editor } from "@earendil-works/pi-tui";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -17,18 +16,6 @@ export const ICON_OTHER = "✎"; // pencil for "Type something."
 export const ICON_CURSOR = "▸"; // current cursor position, independent of selection
 export const ICON_NOTE = ICON_OTHER; // same ✎ pencil as custom answers — the note is also free-form user input
 export const ICON_ANSWER = "›"; // lead glyph on option-pick answers in the result card
-
-// ────────────────────────────────────────────────────────────────────────────
-// Toggle key
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Collapse/expand toggle. Ctrl+\ (0x1c) is free in pi's built-in keybindings
- * (unlike Ctrl+] which collides with tui.editor.jumpForward) and is not used
- * as a prefix by tmux/zellij/screen/ssh.
- */
-export const TOGGLE_KEY = Key.ctrl("\\");
-export const TOGGLE_HINT = "Ctrl+\\";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types

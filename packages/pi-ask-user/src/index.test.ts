@@ -5,6 +5,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import askUserExtension from "./index.ts";
 
 const plainTheme = {
@@ -84,4 +87,40 @@ test("ask_user sanitizes control characters in tab labels used by the panel", as
   assert.match(rendered, /\(unnamed\)/);
   assert.doesNotMatch(rendered, /[\r\t]/);
   assert.deepEqual(payload, { cancelled: true, answers: [] });
+});
+
+test("ask_user honors a custom toggle key from settings", async () => {
+  // Redirect the global settings location into a temp dir so the test
+  // controls `askUser.toggleKey` without touching the real config.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ask-user-toggle-"));
+  const prevAgentDir = process.env.PI_AGENT_DIR;
+  process.env.PI_AGENT_DIR = tmpDir;
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, "settings.json"),
+      JSON.stringify({ askUser: { toggleKey: "alt+\\" } }),
+    );
+    await executeAskUser(
+      [{ tab: "q", header: "Q", options: [{ label: "one" }] }],
+      (panel) => {
+        // Expanded: option list is visible.
+        const expanded = panel.render(80).join("\n");
+        assert.match(expanded, /one/);
+        // The default toggle key (ctrl+\ = 0x1c) no longer collapses.
+        panel.handleInput("\x1c");
+        assert.match(panel.render(80).join("\n"), /one/);
+        // The configured toggle key (alt+\ = ESC + backslash) collapses.
+        panel.handleInput("\x1b\\");
+        const collapsed = panel.render(80).join("\n");
+        assert.doesNotMatch(collapsed, /one/);
+        assert.match(collapsed, /expand/);
+        // Esc still cancels from the collapsed row.
+        panel.handleInput("\u001b");
+      },
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (prevAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = prevAgentDir;
+  }
 });
