@@ -205,6 +205,33 @@ export function parseModelRef(modelRef: string): { provider: string; modelId: st
   };
 }
 
+// ── Partitioned fuzzy filter ───────────────────────────────────────
+
+/**
+ * Filter two partitions independently and concatenate them in a stable order:
+ * every matching item from `primary`, then every matching item from
+ * `secondary`. Each group is ranked by fuzzy score on its own, so `primary`
+ * always stays on top — a single {@link fuzzyFilter} call flattens both groups
+ * into one score-ordered list and erases the boundary between them.
+ *
+ * An empty (or whitespace-only) query returns `[...primary, ...secondary]`
+ * unchanged.
+ *
+ * @internal — exported for testing; the model selector is the only caller.
+ */
+export function partitionedFuzzyFilter<T>(
+  primary: T[],
+  secondary: T[],
+  query: string,
+  getText: (item: T) => string,
+): T[] {
+  if (!query.trim()) return [...primary, ...secondary];
+  return [
+    ...fuzzyFilter(primary, query, getText),
+    ...fuzzyFilter(secondary, query, getText),
+  ];
+}
+
 async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   let models: Awaited<ReturnType<typeof ctx.modelRegistry.getAvailable>>;
   try {
@@ -221,23 +248,34 @@ async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promi
 
   const scopedIds = new Set(ctx.scopedModels.map((s) => `${s.model.provider}/${s.model.id}`));
 
-  // Scoped models float to the top with a ★ prefix (favorites); the rest follow
-  // alphabetically. Within the scoped group we also sort alphabetically so the
-  // ordering is stable and predictable regardless of registry order.
-  const decorated = models.map((m) => {
-    const value = `${m.provider}/${m.id}`;
-    return { model: m, value, scoped: scopedIds.has(value) };
-  });
-  decorated.sort((a, b) => {
-    if (a.scoped !== b.scoped) return a.scoped ? -1 : 1;
-    return a.model.name.localeCompare(b.model.name);
-  });
+  // Build each model's SelectItem alongside whether it's scope-pinned, then
+  // sort into two stable groups — scoped first (★), then the rest —
+  // alphabetical within each. We keep the groups as separate arrays so the
+  // search pipeline below can re-apply the same partitioning.
+  const decorated = models
+    .map((m) => {
+      const value = `${m.provider}/${m.id}`;
+      const scoped = scopedIds.has(value);
+      return {
+        scoped,
+        item: {
+          value,
+          label: scoped ? `${STAR}${m.name}` : m.name,
+          description: m.provider,
+        } satisfies SelectItem,
+      };
+    })
+    .sort((a, b) => {
+      if (a.scoped !== b.scoped) return a.scoped ? -1 : 1;
+      return a.item.label.localeCompare(b.item.label);
+    });
 
-  const items: SelectItem[] = decorated.map((d) => ({
-    value: d.value,
-    label: d.scoped ? `${STAR}${d.model.name}` : d.model.name,
-    description: d.model.provider,
-  }));
+  // Scoped models (★) stay above the rest whether browsing or filtering: each
+  // group is filtered and ranked independently, then concatenated, so a search
+  // never merges the two into one score-ordered list.
+  const scopedItems: SelectItem[] = decorated.filter((d) => d.scoped).map((d) => d.item);
+  const otherItems: SelectItem[] = decorated.filter((d) => !d.scoped).map((d) => d.item);
+  const items: SelectItem[] = [...scopedItems, ...otherItems];
 
   const result = await ctx.ui.custom<string | null>(
     (tui, theme, _kb, done) => {
@@ -261,13 +299,12 @@ async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promi
       const queryText = new Text(theme.fg("accent", "> "), 1, 0);
 
       function applyQuery() {
-        const filtered = query
-          ? fuzzyFilter(
-              items,
-              query,
-              (item: SelectItem) => `${item.label} ${item.description ?? ""}`,
-            )
-          : items;
+        const filtered = partitionedFuzzyFilter(
+          scopedItems,
+          otherItems,
+          query,
+          (item: SelectItem) => `${item.label} ${item.description ?? ""}`,
+        );
         // FRAGILE: SelectList has no public filter/setItems API, so we poke its
         // private filteredItems directly. If pi-tui renames it, filtering breaks
         // silently with no compile error.

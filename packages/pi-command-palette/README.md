@@ -72,7 +72,7 @@ When a command replaces your editor text, or you run **Editor: Clear Content**, 
 
 The "Model: Switch Model" action opens a secondary overlay listing all models with configured API keys. Select one to switch instantly — no need to go through `/model` or `Ctrl+P`.
 
-**Scoped models float to the top**, marked with a ★ (favorite) prefix. "Scoped" here means the same set pi uses for its built-in selector's scoped tab and `Ctrl+P` cycling — the `enabledModels` patterns in your `settings.json` (project `.pi/settings.json` overrides global `~/.pi/agent/settings.json`). Everything else follows alphabetically. If no scope is configured, the list is a plain alphabetical roster — nothing breaks.
+**Scoped models float to the top**, marked with a ★ (favorite) prefix. "Scoped" here means the same set pi uses for its built-in selector's scoped tab and `Ctrl+P` cycling — the `enabledModels` patterns in your `settings.json` (project `.pi/settings.json` overrides global `~/.pi/agent/settings.json`). Everything else follows alphabetically. Filtering preserves that boundary too — scoped matches stay above the rest while you type, rather than collapsing into one score-ordered list. If no scope is configured, the list is a plain alphabetical roster — nothing breaks.
 
 ## Configuration
 
