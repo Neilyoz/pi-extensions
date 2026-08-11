@@ -3,8 +3,10 @@
  *
  * Nudges agents away from unnecessary access outside the project: broad disk
  * searches, stale application-data paths, and persistent output written to
- * unrelated directories. It is intentionally a low-noise behavioral guard,
- * not a security boundary or shell sandbox; bash inspection is best-effort.
+ * Because static bash inspection cannot be accurate (see bash-extract.ts), it
+ * favors low noise — letting an ambiguous case through over blocking an
+ * ordinary command — so it is a behavior guard, not a security boundary or
+ * shell sandbox.
  *
  * Three modes (switchable at runtime via `/access-denied`):
  *   - prompt: ask the user; choices are allow / always-allow / deny / always-deny

@@ -8,9 +8,13 @@
  * is what keeps the gate trustworthy:
  *
  *   - **Quoted strings stay whole.** A multi-line `git commit -m "…"` message
- *     is a single Word whose inner text never surfaces as bare path tokens —
- *     eliminating the false positives that trained users to hit "always allow"
- *     and thereby disarmed the gate exactly when `rm -r /` later appears.
+ *     is a single Word whose inner text never surfaces as bare path tokens.
+ *     Static analysis cannot tell whether a quoted run is a path a program will
+ *     open or merely a value that happens to contain path-like text (a commit
+ *     message, an `echo` argument), so it is treated as data. The upside of
+ *     this conservative default is low noise: a flood of false positives would
+ *     push users to blanket-allow everything, disarming the gate exactly when a
+ *     real `rm -r /` later appears.
  *   - **Nested commands recurse.** Command substitutions `$(cmd)`, backticks,
  *     process substitutions `<(cmd)`, subshells, and every control-flow body
  *     (`if`/`for`/`while`/`case`/…) are walked, so paths hidden inside nested
@@ -19,9 +23,10 @@
  *     split on the braces; `=~` is a binary test operator, not a bare `~`.
  *
  * This is PURE EXTRACTION: it returns every escaping-looking candidate without
- * judging allow/deny — classification is the PathManager's job. It is a
- * deliberately conservative heuristic (bash is Turing-complete; perfect static
- * analysis is impossible). Malformed input yields a best-effort partial AST
+ * judging allow/deny — classification is the PathManager's job. Because bash
+ * is Turing-complete and perfect static analysis is impossible, extraction
+ * can only surface candidates it can identify reliably. Malformed input
+ * yields a best-effort partial AST
  * (unbash collects errors instead of throwing); we walk whatever we get.
  *
  * Quoted words are treated as data literals and NOT scanned for paths — a

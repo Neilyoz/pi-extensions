@@ -6,7 +6,7 @@ Behavior guard for `write` / `edit` / `bash` path choices. It nudges an agent ba
 
 LLMs sometimes choose unnecessarily broad or misplaced paths: `find /` instead of searching the project, an application data directory remembered from training data, or a home-directory output path when the result belongs in the repository. This extension catches common forms of those calls and either asks you, redirects the agent with a reason, or blocks the call according to your selected mode.
 
-It is a **behavior-correction layer**, not a security sandbox. Bash commands are parsed structurally (not flat-tokenized) so that quoted text and nested commands are handled correctly; matching remains deliberately best-effort and biased toward low noise — missing an unusual path expression is preferable to interrupting ordinary commands with false positives. Use OS/container isolation when access must be enforced against deliberate or comprehensive evasion.
+It is a **behavior-correction layer**, not a security sandbox. Bash commands are parsed structurally (not flat-tokenized) so that quoted text and nested commands are handled correctly; because perfect static matching is impossible, matching is best-effort and biased toward low noise — missing an unusual path expression is preferable to interrupting ordinary commands with false positives. Use OS/container isolation when access must be enforced against deliberate or comprehensive evasion.
 
 > Pi's built-in "trusted projects" controls whether project-local config, resources, and extensions may load. This extension instead influences agent tool behavior after loading; it does not reuse or replace pi's trust model.
 
@@ -167,7 +167,7 @@ A bash command is an arbitrary shell string, so **perfect static path analysis i
 - **Quoted real paths are treated as data.** `cat '/etc/passwd'` passes through even though `cat /etc/passwd` (bare) is blocked — a quoted run is an argument value, and static analysis cannot know whether a given program opens it as a file. The bare-path check covers the common case.
 - An assignment like `X=/etc/passwd` is data, not file access, and is skipped (nested `X=$(…)` still recurses).
 
-This is intentional best-effort matching, not an absolute sandbox. The goal is to correct common agent behavior with little noise, not to understand every possible shell expansion. For enforced isolation, use a container or remote execution boundary.
+This matching is best-effort, not an absolute sandbox: static analysis cannot resolve every shell expansion, so it favors low noise over completeness. The goal is to correct common agent behavior with little noise, not to understand every possible shell expansion. For enforced isolation, use a container or remote execution boundary.
 
 ## Non-interactive mode
 
