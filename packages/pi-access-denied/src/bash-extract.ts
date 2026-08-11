@@ -86,6 +86,7 @@ function isEscapingCandidate(token: string): boolean {
   if (token.startsWith("/") || path.isAbsolute(token)) return true; // absolute (posix + windows native)
   if (token === "~" || token.startsWith("~/")) return true; // home
   if (token === "$HOME" || token.startsWith("$HOME/")) return true; // home
+  if (/^~[A-Za-z_]/.test(token)) return true; // ~otheruser (another user's home, kept symbolic)
   if (token === ".." || token.startsWith("../")) return true; // parent climb
   if (/\/\.\.(\/|$)/.test(token)) return true; // embedded parent: a/.. or a/../b
   return false;

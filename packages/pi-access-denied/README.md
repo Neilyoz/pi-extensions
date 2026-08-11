@@ -136,10 +136,13 @@ Use `allowedPaths` to add your own always-safe roots (e.g. a log dir you always 
 - **`write` / `edit`**: takes the `path` argument directly — exact.
 - **`bash`**: the command string is parsed into a structural AST ([unbash](https://github.com/webpro-nl/unbash)) and walked recursively; only **clearly escaping** tokens are judged:
   - absolute paths starting with `/`
-  - `~` / `$HOME` prefixes
+  - `~` / `$HOME` prefixes (current user's home)
+  - `~otheruser` prefixes (another user's home — kept symbolic, see below)
   - `..` parent climbs (`../x`, `a/..`, `a/../b`)
 
   Relative paths under `cwd` (e.g. `src/foo.ts`, `cat README.md`) are left alone by default.
+
+`~otheruser` (another user's home, e.g. `~root`) is recognized too. Its real target can't be resolved without the user database, so it's kept as a symbolic form — a config rule `~otheruser/x` and a command `~otheruser/x/y` normalize to the same symbol and match by prefix. Put one in `allowedPaths`/`deniedPaths` to allow or redirect it. `~` (current user) still expands to the real home.
 
 **Quoted strings are data, not paths.** A quoted run (single/double/ANSI-C) is an argument's value — e.g. a multi-line `git commit -m "…"` message — so its inner text is never mined for path tokens. This is what keeps the gate quiet instead of flagging every `/…` inside a commit message and training you to hit "always allow". Command and process substitutions still execute inside quotes (`"$(rm /x)"`), so they are recursed into regardless of quoting context. Heredoc bodies are stdin data and not scanned; an *unquoted* heredoc's `$(…)` substitutions do execute and are caught.
 

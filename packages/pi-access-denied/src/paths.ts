@@ -202,12 +202,40 @@ export function builtinSafeRoots(): string[] {
 
 // ── Path resolution ─────────────────────────────────────────────────────────
 
-/** Expand a leading `~` or `$HOME` form to the home directory. Returns null if not a home form. */
+/**
+ * Current username, used to tell `~me` (→ my home, same as `~`) from `~other`
+ * (another user's home). Empty when unobtainable, in which case every `~user` is
+ * treated as another user and kept symbolic.
+ */
+const CURRENT_USER: string = (() => {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return "";
+  }
+})();
+
+/**
+ * Expand a leading `~` or `$HOME` form. Returns null if not a home form.
+ *
+ * `~otheruser` cannot be resolved without the user database (getpwnam /
+ * /etc/passwd), which Node does not expose and which is platform-specific, so
+ * it is kept symbolic (`~otheruser/…`). This lets a config rule and a command
+ * that both mention `~otheruser/x` normalize to the same string and match by
+ * prefix. `~me` (the current user) still expands to the real home, like bash.
+ */
 function expandHome(token: string): string | null {
   if (token === "~") return os.homedir();
   if (token.startsWith("~/")) return path.join(os.homedir(), token.slice(2));
   if (token === "$HOME") return os.homedir();
   if (token.startsWith("$HOME/")) return path.join(os.homedir(), token.slice(6));
+  // ~username: another user's home (or `~me`, which is equivalent to `~`).
+  const m = /^~([A-Za-z_][A-Za-z0-9_-]*)(.*)$/.exec(token);
+  if (m) {
+    const [, user, rest] = m;
+    if (user === CURRENT_USER) return path.join(os.homedir(), rest);
+    return `~${user}${rest}`;
+  }
   return null;
 }
 

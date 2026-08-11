@@ -221,6 +221,33 @@ describe("msysDrive: Git Bash drive notation", () => {
   });
 });
 
+describe("resolveTarget: home expansion (toPosix-normalized)", () => {
+  // resolveTarget output is platform-shaped (win32 adds backslashes); normalize
+  // to posix so the same assertion holds on every host.
+  const R = (t: string) => toPosix(resolveTarget(t, "/proj"));
+  const home = () => toPosix(os.homedir());
+
+  test("~ and ~/ expand to the current user's home", () => {
+    assert.equal(R("~"), home());
+    assert.equal(R("~/x"), toPosix(path.join(os.homedir(), "x")));
+  });
+  test("$HOME and $HOME/ expand to the current user's home", () => {
+    assert.equal(R("$HOME"), home());
+    assert.equal(R("$HOME/x"), toPosix(path.join(os.homedir(), "x")));
+  });
+  test("~otheruser is kept symbolic (no database lookup)", () => {
+    assert.equal(R("~root"), "~root");
+    assert.equal(R("~root/work"), "~root/work");
+    assert.equal(R("~daemon/.ssh"), "~daemon/.ssh");
+  });
+  test("~currentuser expands to the real home (equivalent to ~)", () => {
+    const me = os.userInfo().username;
+    if (!me) return; // current user unobtainable on this host
+    assert.equal(R(`~${me}`), home());
+    assert.equal(R(`~${me}/x`), toPosix(path.join(os.homedir(), "x")));
+  });
+});
+
 
 // ────────────────────────────────────────────────────────────────────────────
 // 2. PathManager — the single decision engine (longest-prefix-match)
@@ -248,6 +275,35 @@ describe("PathManager: longest-prefix-match (the core algorithm)", () => {
     const pm = new PathManager("/proj", ["/aaa/bbb"], {});
     // /aaa/bbbccd is NOT under /aaa/bbb (must be a path separator boundary)
     assert.equal(pm.decide("/aaa/bbbccd").kind, "outside");
+  });
+});
+
+describe("PathManager: ~otheruser symbolic home rules", () => {
+  test("config allow ~otheruser/x permits a command beneath it", () => {
+    const pm = new PathManager("/proj", ["~root/work"], {});
+    assert.equal(pm.decide("~root/work/secret").kind, "allow");
+    assert.equal(pm.decide("~root/work").kind, "allow"); // exact rule
+  });
+  test("config deny ~otheruser blocks access beneath it", () => {
+    const pm = new PathManager("/proj", [], { "~root": "other users are off-limits" });
+    const d = pm.decide("~root/.ssh/authorized_keys");
+    assert.equal(d.kind, "deny");
+    assert.equal(d.reason, "other users are off-limits");
+  });
+  test("uncovered ~otheruser path is 'outside' (needs authorization)", () => {
+    const pm = new PathManager("/proj", [], {});
+    assert.equal(pm.decide("~root/anything").kind, "outside");
+  });
+  test("session always-allow ~otheruser overrides an uncovered path", () => {
+    const pm = new PathManager("/proj", [], {});
+    pm.addSessionAllow("~root");
+    assert.equal(pm.decide("~root/work/secret").kind, "allow");
+  });
+  test("~currentuser resolves to the real home, not a symbol", () => {
+    const me = os.userInfo().username;
+    if (!me) return;
+    const pm = new PathManager("/proj", [`~${me}/notes`], {});
+    assert.equal(pm.decide(path.join(os.homedir(), "notes/x")).kind, "allow");
   });
 });
 

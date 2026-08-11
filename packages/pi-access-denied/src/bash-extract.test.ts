@@ -202,8 +202,26 @@ describe("extractBashTargets: POSIX behavior", { skip: SKIP_POSIX }, () => {
     assert.deepEqual(extractBashTargets("echo ${HOME}", CWD), [os.homedir()]);
   });
 
-  test("~otheruser is NOT detected as home expansion (limitation)", () => {
-    assert.deepEqual(extractBashTargets("cat ~root/.ssh/authorized_keys", CWD), []);
+  test("~otheruser is extracted as a symbolic escaping candidate", () => {
+    assert.deepEqual(extractBashTargets("cat ~root/.ssh/authorized_keys", CWD), [
+      "~root/.ssh/authorized_keys",
+    ]);
+  });
+
+  test("bare ~otheruser (no path) is extracted as a symbolic candidate", () => {
+    assert.deepEqual(extractBashTargets("echo ~root", CWD), ["~root"]);
+  });
+
+  test("~currentuser expands to the real home (equivalent to ~)", () => {
+    const me = os.userInfo().username;
+    assert.deepEqual(extractBashTargets(`cat ~${me}/.ssh/config`, CWD), [
+      path.join(os.homedir(), ".ssh/config"),
+    ]);
+  });
+
+  test("~- and ~+ (PWD/OLDPWD) are not treated as user homes", () => {
+    assert.deepEqual(extractBashTargets("cat ~-/x", CWD), []);
+    assert.deepEqual(extractBashTargets("cat ~+/x", CWD), []);
   });
 
   test("\\$HOME is unescaped and extracted as home-dir access", () => {
