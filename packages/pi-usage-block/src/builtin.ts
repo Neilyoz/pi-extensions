@@ -210,34 +210,31 @@ async function deepseekBalance(apiKey: string): Promise<BalanceInfo> {
 }
 
 /**
- * OpenCode Go: GET /zen/go/v1/usage → rolling5h + weekly + monthly quota windows (dollars).
+ * OpenCode Go: GET /zen/go/v1/usage → rolling (5h) + weekly + monthly quota
+ * windows, each reported as a consumed percentage (0–100, 100 = rate-limited).
  *
- * Dormant — NOT registered in {@link BUILTIN_PROVIDERS} because this endpoint
- * doesn't exist on opencode.ai yet. The response shape is taken verbatim from
- * the API proposed in anomalyco/opencode#31084 (still an open feature request;
- * see also implementation attempt anomalyco/opencode#16513). Until it ships,
- * every third-party tool scrapes the web dashboard via session cookies, since
- * no JSON usage API is published.
- *
- * When the endpoint lands, re-enable the entry in {@link BUILTIN_PROVIDERS};
- * the field names here already match the proposal, so this should work as-is.
+ * Response shape (verified live against opencode.ai, 2026-08):
+ *   { "usage": { "rolling":  { "status": "ok", "percent": 0,  "resetsAt": "<ISO>" },
+ *                "weekly":   { "status": "ok", "percent": 0,  "resetsAt": "<ISO>" },
+ *                "monthly":  { "status": "ok", "percent": 88, "resetsAt": "<ISO>" } } }
+ * The endpoint returns no absolute amounts — only percentages — so used/limit
+ * are mapped to percent/100 and every window with a numeric percent is shown
+ * (100 included).
  */
 async function opencodeGoUsage(apiKey: string): Promise<QuotaWindow[]> {
   const data = await fetchJson("https://opencode.ai/zen/go/v1/usage", apiKey);
   const windows: QuotaWindow[] = [];
-  for (const [key, label] of [["rolling5h", "5h"], ["weekly", "weekly"], ["monthly", "monthly"]] as const) {
-    const w = data?.[key];
+  for (const [key, label] of [["rolling", "5h"], ["weekly", "weekly"], ["monthly", "monthly"]] as const) {
+    const w = data?.usage?.[key];
     if (!w) continue;
-    const used = Number(w.usageDollars);
-    const limit = Number(w.limitDollars);
-    if (!Number.isFinite(used) || !Number.isFinite(limit)) continue;
-    const resetInSec = Number(w.resetInSec);
+    const percent = Number(w.percent);
+    if (!Number.isFinite(percent)) continue;
     windows.push({
       period: label,
-      used,
-      limit,
+      used: percent,
+      limit: 100,
       unit: "dollars",
-      resetAt: Number.isFinite(resetInSec) && resetInSec > 0 ? new Date(Date.now() + resetInSec * 1000) : undefined,
+      resetAt: typeof w.resetsAt === "string" ? new Date(w.resetsAt) : undefined,
     });
   }
   return windows;
@@ -334,15 +331,13 @@ export const BUILTIN_PROVIDERS: BuiltinDef[] = [
       fetchBalance: () => deepseekBalance(apiKey),
     }),
   },
-  // OpenCode Go has no public usage API yet — see opencodeGoUsage above and
-  // anomalyco/opencode#31084. Re-enable once it ships.
-  // {
-  //   id: "opencode-go",
-  //   build: ({ apiKey }) => ({
-  //     kind: "quota", id: "opencode-go", name: "OpenCode Go", source: "api",
-  //     fetchUsage: () => opencodeGoUsage(apiKey),
-  //   }),
-  // },
+  {
+    id: "opencode-go",
+    build: ({ apiKey }) => ({
+      kind: "quota", id: "opencode-go", name: "OpenCode Go", source: "api",
+      fetchUsage: () => opencodeGoUsage(apiKey),
+    }),
+  },
   {
     id: "zai",
     build: ({ apiKey }) => ({
