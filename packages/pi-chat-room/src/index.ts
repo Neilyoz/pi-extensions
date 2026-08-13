@@ -3,8 +3,9 @@
  *
  * Agent-to-agent messaging on @d3ara1n/pi-mesh. Exposes the `send_to` tool and
  * serves incoming `message` requests by injecting them as user messages prefixed
- * `[From: NAME]`, queued until idle (deliverAs: "followUp") so an in-flight turn
- * is never interrupted.
+ * `[From: NAME]`, delivered per the `chatRoom.deliveryMode` setting — "steer"
+ * (default) injects them at the next safe point mid-turn; "followUp" queues
+ * them until the agent finishes its turn.
  *
  * Role-agnostic: it does not know "assistant" or "director" — it just delivers
  * bytes between named peers. Roles are declared via pi-mesh's mesh_set_profile.
@@ -17,15 +18,19 @@ import { MESH_READY_EVENT, tryGetMeshAPI } from "@d3ara1n/pi-mesh";
 import type { MeshAPI } from "@d3ara1n/pi-mesh";
 import { registerChatRoomTools } from "./tools.ts";
 import { MESSAGE_TYPE } from "./types.ts";
+import { DEFAULT_CONFIG } from "./types.ts";
+import type { ChatRoomConfig } from "./types.ts";
 import type { MessageAck, MessageRequestData } from "./types.ts";
+import { loadConfig } from "./config.ts";
 
 export default function registerChatRoomExtension(pi: ExtensionAPI): void {
   let registered = false;
+  let config: ChatRoomConfig = DEFAULT_CONFIG;
 
   // Serve incoming messages: inject as a user message prefixed with the sender,
-  // queued until the agent is idle so we never interrupt an in-flight turn.
-  // Returns immediately (delivery ack) — the recipient agent processes the
-  // injected message in a later, independently-triggered turn.
+  // using the configured delivery mode. Config is read at message time — startup
+  // always completes before any message arrives, so the mesh:ready path below
+  // never needs to touch it. Returns immediately (delivery ack).
   function serveMessages(mesh: MeshAPI): void {
     if (registered) return;
     registered = true;
@@ -33,7 +38,7 @@ export default function registerChatRoomExtension(pi: ExtensionAPI): void {
       const { from, text } = (data ?? {}) as MessageRequestData;
       const sender = from || "unknown";
       const body = `[From: ${sender}] ${text ?? ""}`.trim();
-      pi.sendUserMessage(body, { deliverAs: "followUp" });
+      pi.sendUserMessage(body, { deliverAs: config.deliveryMode });
       return { delivered: true } satisfies MessageAck;
     });
   }
@@ -43,7 +48,8 @@ export default function registerChatRoomExtension(pi: ExtensionAPI): void {
   pi.events.on(MESH_READY_EVENT, (mesh: unknown) => serveMessages(mesh as MeshAPI));
 
   // (b) mesh inits BEFORE us, or in the same session_start pass → already on globalThis.
-  pi.on("session_start", async () => {
+  pi.on("session_start", async (_event, ctx) => {
+    config = loadConfig(ctx.cwd);
     const mesh = tryGetMeshAPI();
     if (!mesh) return; // waiting for the mesh:ready listener to fire
     serveMessages(mesh);

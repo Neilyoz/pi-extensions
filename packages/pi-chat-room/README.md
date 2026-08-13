@@ -6,8 +6,8 @@ Role-agnostic and order-agnostic: it doesn't know "assistant" or "director" — 
 
 ## How it works
 
-- **Send**: the `send_to` tool resolves a peer by name and delivers a message over the mesh. Asynchronous — returns once the recipient's mesh acknowledges receipt, NOT when the recipient agent reads or replies. Replies arrive later as their own `[From: ...]` messages.
-- **Receive**: incoming messages are injected as user messages (`[From: NAME] ...`), queued via `deliverAs: "followUp"` until the agent is idle — never interrupts an in-flight turn.
+- **Send**: the `send_to` tool resolves a peer by name and delivers a message over the mesh. Asynchronous — returns once the recipient's mesh acknowledges receipt, NOT when the recipient agent reads or replies. Replies arrive later as their own `[From: ...]` user messages.
+- **Receive**: incoming messages are injected as user messages (`[From: NAME] ...`), delivered per the `chatRoom.deliveryMode` setting — `"steer"` (default) injects them at the next safe point while the agent is mid-turn; `"followUp"` queues them until the agent finishes its turn, then starts a new turn.
 - **Output dual-channel**: an agent's normal output goes to the human user; addressing another agent REQUIRES `send_to`. This is enforced via `promptGuidelines`, since LLMs have no native notion of routing output to one audience vs another.
 
 ## Tool
@@ -20,6 +20,25 @@ Send a message to another pi instance on the mesh.
 |-----------|----------|-------------|
 | `name` | yes | Recipient's mesh name (from `mesh_list`). |
 | `message` | yes | The message body. |
+
+## Configuration
+
+Delivery of incoming messages is controlled by the `chatRoom` settings block:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `deliveryMode` | `"steer"` \| `"followUp"` | `"steer"` | How incoming messages are injected. `"steer"` (default) delivers at the next safe point while the agent is mid-turn, so replies arrive as early as possible. `"followUp"` waits until the agent finishes its turn, then starts a new turn — never interrupts in-flight work. |
+
+```jsonc
+// ~/.pi/agent/settings.json
+{
+  "chatRoom": {
+    "deliveryMode": "followUp"
+  }
+}
+```
+
+A project-level `.pi/settings.json` `chatRoom` block replaces the global block entirely.
 
 ## Installation
 

@@ -4,8 +4,8 @@
  * One tool: send_to({ name, message }) delivers a message to a named peer.
  * Delivery is asynchronous: it resolves once the recipient's mesh acknowledges
  * receipt (the recipient has queued the message as a user message), NOT when
- * the recipient agent reads or replies. Any reply arrives later as its own
- * [From: NAME] user message.
+ * the recipient agent reads or replies. Any reply arrives as a [From: NAME]
+ * user message after the recipient's turn ends, starting a new turn.
  *
  * The promptGuidelines below encode the OUTPUT DUAL-CHANNEL rule: an agent's
  * normal output goes to the human user; addressing another agent REQUIRES
@@ -30,15 +30,15 @@ export function registerChatRoomTools(pi: ExtensionAPI): void {
     name: "send_to",
     label: "Message another agent",
     description:
-      "Send a message to another pi instance on the agent mesh. The recipient receives it as a user message prefixed [From: <your name>], queued until it is idle. " +
+      "Send a message to another pi instance on the agent mesh. The recipient receives it as a user message prefixed [From: <your name>]. " +
       "Use this to address another agent directly — your normal output is seen by the human user, not by other agents. " +
-      "Delivery is asynchronous: this returns once the recipient's mesh acknowledges receipt, NOT when the recipient agent reads or replies; any reply arrives later as its own [From: ...] message. " +
+      "Delivery is asynchronous: this returns once the recipient's mesh acknowledges receipt, NOT when the recipient agent reads or replies; the reply arrives as a [From: ...] user message after your current turn ends, starting a new turn. " +
       "Use mesh_list first to discover names.",
     promptSnippet: "Send a message to another pi agent on the mesh",
     promptGuidelines: [
       "Use send_to to address another agent on the mesh; your normal output is seen by the human user only, never by other agents.",
       "Messages from other agents arrive as user text prefixed [From: NAME]; reply to their content with send_to(name=NAME, ...), not in your normal output.",
-      "send_to returns once the recipient's mesh acknowledges delivery — it does not wait for the recipient to read or reply; expect their reply later as another [From: NAME] message.",
+      "send_to returns once the recipient's mesh acknowledges delivery — it does not wait for the recipient to read or reply. The reply arrives as a [From: NAME] user message after your current turn ends, starting a new turn.",
     ],
     parameters: Type.Object({
       name: Type.String({ description: "Recipient's mesh name (as shown by mesh_list)." }),
