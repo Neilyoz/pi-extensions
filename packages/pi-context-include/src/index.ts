@@ -2,7 +2,8 @@
  * Context Include Extension (@-syntax for AGENTS.md)
  *
  * Enables `@path/to/file.md` references in AGENTS.md files.
- * References must appear at the start of a line (after trimming).
+ * References must appear at the start of a line (after trimming, and after an
+ * optional Markdown list marker such as `-`, `*`, `+`, or `1.`).
  * Lines inside fenced code blocks (```) are ignored.
  *
  * On each agent turn, scans the loaded AGENTS.md files (provided via
@@ -121,7 +122,8 @@ async function readSettingsFile(filePath: string): Promise<Record<string, unknow
 
 /**
  * Extract @path references from a file's content.
- * Only lines starting with @ (after trim) are matched.
+ * Lines starting with @ are matched (after trimming an optional Markdown list
+ * marker — `-`, `*`, `+`, or an ordered `N.` — followed by whitespace).
  * Lines inside fenced code blocks (```) are ignored.
  *
  * @internal — exported for testing.
@@ -146,7 +148,10 @@ export function extractReferences(content: string): string[] {
 
     if (inFencedBlock) continue;
 
-    const match = refPattern.exec(trimmed);
+    // Strip a leading Markdown list marker (-, *, +, or N.) + whitespace so
+    // `- @file.md` / `1. @file.md` work like a bare `@file.md`.
+    const stripped = trimmed.replace(/^([-*+]|\d+\.)\s+/, "");
+    const match = refPattern.exec(stripped);
     if (match) {
       const ref = match[1];
       if (!seen.has(ref)) {

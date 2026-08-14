@@ -103,6 +103,56 @@ describe("extractReferences", () => {
     assert.deepStrictEqual(refs, ["padded.md"]);
   });
 
+  // ── list markers (issue #4) ──
+
+  it("ignores unordered list marker dash", () => {
+    const refs = extractReferences("- @README.md");
+    assert.deepStrictEqual(refs, ["README.md"]);
+  });
+
+  it("ignores unordered list marker asterisk", () => {
+    const refs = extractReferences("* @someother.md");
+    assert.deepStrictEqual(refs, ["someother.md"]);
+  });
+
+  it("ignores unordered list marker plus", () => {
+    const refs = extractReferences("+ @plus.md");
+    assert.deepStrictEqual(refs, ["plus.md"]);
+  });
+
+  it("ignores ordered list marker", () => {
+    const refs = extractReferences("1. @ordered.md");
+    assert.deepStrictEqual(refs, ["ordered.md"]);
+  });
+
+  it("ignores list marker after indentation", () => {
+    const refs = extractReferences("    * @somedoc.md");
+    assert.deepStrictEqual(refs, ["somedoc.md"]);
+  });
+
+  it("handles mixed list markers and plain references", () => {
+    const content = ["@plain.md", "- @dash.md", "* @star.md", "  1. @nested.md"].join("\n");
+    const refs = extractReferences(content);
+    assert.deepStrictEqual(refs, ["plain.md", "dash.md", "star.md", "nested.md"]);
+  });
+
+  it("ignores marker without separating space", () => {
+    // `-@x.md` is not a valid Markdown list item; left unchanged, no @ at start.
+    const refs = extractReferences("-@nospace.md");
+    assert.deepStrictEqual(refs, []);
+  });
+
+  it("does not treat plain list text as a reference", () => {
+    const refs = extractReferences("- just some text");
+    assert.deepStrictEqual(refs, []);
+  });
+
+  it("still skips list-marked @ inside fenced code block", () => {
+    const content = ["```", "- @inside.md", "```", "- @outside.md"].join("\n");
+    const refs = extractReferences(content);
+    assert.deepStrictEqual(refs, ["outside.md"]);
+  });
+
   // ── fenced code blocks ──
 
   it("ignores @ inside fenced code block", () => {
