@@ -315,8 +315,8 @@ describe("context include recursive resolution", () => {
   it("project config block replaces global config before defaults fill gaps", async () => {
     const project = makeTempProject();
     const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "context-include-agent-"));
-    const savedAgentDir = process.env.PI_AGENT_DIR;
-    process.env.PI_AGENT_DIR = agentDir;
+    const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
     try {
       fs.mkdirSync(path.join(project, ".pi"), { recursive: true });
       fs.writeFileSync(
@@ -334,8 +334,8 @@ describe("context include recursive resolution", () => {
 
       assert.ok(prompt?.includes(`<project_instructions path="${fs.realpathSync(child)}">`));
     } finally {
-      if (savedAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-      else process.env.PI_AGENT_DIR = savedAgentDir;
+      if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
       fs.rmSync(agentDir, { recursive: true, force: true });
     }
   });
@@ -376,15 +376,15 @@ describe("context include recursive resolution", () => {
     fs.mkdirSync(includesDir);
     const shared = path.join(includesDir, "shared.md");
     fs.writeFileSync(shared, "shared rules");
-    const saved = process.env.PI_AGENT_DIR;
-    process.env.PI_AGENT_DIR = agentDir;
+    const saved = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
     try {
       const root = writeFile(project, "AGENTS.md", `@${shared}`);
       const prompt = await scanIncludes(project, root, `@${shared}`);
       assert.ok(prompt?.includes("shared rules"));
     } finally {
-      if (saved === undefined) delete process.env.PI_AGENT_DIR;
-      else process.env.PI_AGENT_DIR = saved;
+      if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = saved;
     }
   });
 

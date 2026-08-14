@@ -27,7 +27,7 @@
  */
 
 import { readFile, realpath } from "node:fs/promises";
-import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -103,10 +103,6 @@ async function loadConfig(cwd?: string): Promise<void> {
 /** Accept only non-negative finite numeric limits; invalid values use defaults. */
 function validLimit(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function getAgentDir(): string {
-  return process.env.PI_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
 }
 
 /** Read contextInclude config. A project block replaces the global block. */

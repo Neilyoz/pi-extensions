@@ -7,18 +7,11 @@
  * pi-peek-agent.
  */
 
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { PeekConfig } from "./types.ts";
 import { DEFAULT_PEEK_CONFIG } from "./types.ts";
-
-function getAgentDir(): string {
-  const envDir = process.env["PI_AGENT_DIR"];
-  if (envDir) return envDir;
-  return path.join(os.homedir(), ".pi", "agent");
-}
 
 function readSettingsFile(filePath: string): any {
   try {

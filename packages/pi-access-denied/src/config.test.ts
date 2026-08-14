@@ -5,7 +5,7 @@
  *   node --test src/config.test.ts
  *
  * loadConfig reads real files (global ~/.pi/agent/settings.json + project
- * .pi/settings.json), but exposes a PI_AGENT_DIR override for the global dir.
+ * .pi/settings.json), but exposes a PI_CODING_AGENT_DIR override for the global dir.
  * So we spin up temp dirs, write settings files, and assert end-to-end — this
  * covers the full chain including strict-JSON rejection of comments, file-not-found
  * fallback, parse-failure fallback, and global/project shallow merge, not just
@@ -32,13 +32,13 @@ let savedAgentDir: string | undefined;
 function setup(): void {
   tmpGlobal = fs.mkdtempSync(path.join(os.tmpdir(), "ad-global-"));
   tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), "ad-proj-"));
-  savedAgentDir = process.env.PI_AGENT_DIR;
-  process.env.PI_AGENT_DIR = tmpGlobal;
+  savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = tmpGlobal;
 }
 
 function teardown(): void {
-  if (savedAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-  else process.env.PI_AGENT_DIR = savedAgentDir;
+  if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
   for (const d of [tmpGlobal, tmpProject]) {
     try {
       fs.rmSync(d, { recursive: true, force: true });

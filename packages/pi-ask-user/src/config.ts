@@ -9,8 +9,8 @@
  *   - toggleKey: collapse/expand the panel. Default "ctrl+\\".
  */
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 export interface AskUserConfig {
@@ -21,13 +21,6 @@ export interface AskUserConfig {
 export const DEFAULT_CONFIG: AskUserConfig = {
   toggleKey: "ctrl+\\",
 };
-
-/** Get the pi agent directory path. Honors PI_AGENT_DIR override. */
-function getAgentDir(): string {
-  const envDir = process.env.PI_AGENT_DIR;
-  if (envDir) return envDir;
-  return path.join(os.homedir(), ".pi", "agent");
-}
 
 /** Read and parse a settings.json file. Returns parsed object or {}. */
 function readSettingsFile(filePath: string): any {

@@ -41,13 +41,13 @@ function withSettings(
     fs.writeFileSync(path.join(cwd, ".pi", "settings.json"), JSON.stringify(projectSettings));
   }
 
-  const previousAgentDir = process.env.PI_AGENT_DIR;
-  process.env.PI_AGENT_DIR = agentDir;
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   try {
     run(cwd);
   } finally {
-    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     fs.rmSync(root, { recursive: true, force: true });
   }
 }

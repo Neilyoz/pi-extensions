@@ -15,17 +15,11 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 
 export const DEFAULT_SHORTCUT = "ctrl+shift+p";
-
-function getAgentDir(): string {
-  const envDir = process.env.PI_AGENT_DIR;
-  if (envDir) return envDir;
-  return path.join(os.homedir(), ".pi", "agent");
-}
 
 function readSettings(filePath: string): Record<string, unknown> {
   try {

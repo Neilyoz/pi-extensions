@@ -6,20 +6,13 @@
  * Built-in defaults form the base.
  */
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { ModelRolesConfig, RoleConfig } from "./types.ts";
 import { BUILTIN_DEFAULT_ROLES } from "./defaults.ts";
 
 const DEFAULT_ROLE_NAME = "default";
-
-/** Get the pi agent directory path. */
-function getAgentDir(): string {
-  const envDir = process.env.PI_AGENT_DIR;
-  if (envDir) return envDir;
-  return path.join(os.homedir(), ".pi", "agent");
-}
 
 /** Read and parse a settings.json file. Returns parsed object or empty. */
 function readSettingsFile(filePath: string): any {

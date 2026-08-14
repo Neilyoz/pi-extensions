@@ -6,8 +6,8 @@
  * "project wins" design, no field-level merging.
  */
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 /** Border icon slots that users can override. Each holds a single glyph
@@ -71,12 +71,6 @@ export const DEFAULT_CONFIG: EditorShellConfig = {
   icons: {},
   modelDisplay: "name",
 };
-
-function getAgentDir(): string {
-  const envDir = process.env.PI_AGENT_DIR;
-  if (envDir) return envDir;
-  return path.join(os.homedir(), ".pi", "agent");
-}
 
 /** Read the `editorShell` block from a settings file.
  *  Returns undefined on missing file / parse error / non-object value —

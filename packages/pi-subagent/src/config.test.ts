@@ -1,7 +1,7 @@
 /**
  * Configuration loading regression tests.
  *
- * Uses isolated global/project settings roots via PI_AGENT_DIR.
+ * Uses isolated global/project settings roots via PI_CODING_AGENT_DIR.
  *   node --test packages/pi-subagent/src/config.test.ts
  */
 
@@ -13,7 +13,7 @@ import * as path from "node:path";
 import { loadSubagentConfig } from "./config.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 
-const originalAgentDir = process.env.PI_AGENT_DIR;
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const tempRoots: string[] = [];
 
 function makeRoot(): { agentDir: string; projectDir: string } {
@@ -23,7 +23,7 @@ function makeRoot(): { agentDir: string; projectDir: string } {
   const projectDir = path.join(root, "project");
   fs.mkdirSync(agentDir, { recursive: true });
   fs.mkdirSync(projectDir, { recursive: true });
-  process.env.PI_AGENT_DIR = agentDir;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   return { agentDir, projectDir };
 }
 
@@ -37,8 +37,8 @@ function writeSettingsText(dir: string, content: string): void {
 }
 
 afterEach(() => {
-  if (originalAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-  else process.env.PI_AGENT_DIR = originalAgentDir;
+  if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
   for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 

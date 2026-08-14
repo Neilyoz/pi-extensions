@@ -93,8 +93,8 @@ test("ask_user honors a custom toggle key from settings", async () => {
   // Redirect the global settings location into a temp dir so the test
   // controls `askUser.toggleKey` without touching the real config.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ask-user-toggle-"));
-  const prevAgentDir = process.env.PI_AGENT_DIR;
-  process.env.PI_AGENT_DIR = tmpDir;
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = tmpDir;
   try {
     fs.writeFileSync(
       path.join(tmpDir, "settings.json"),
@@ -120,7 +120,7 @@ test("ask_user honors a custom toggle key from settings", async () => {
     );
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    if (prevAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = prevAgentDir;
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
   }
 });

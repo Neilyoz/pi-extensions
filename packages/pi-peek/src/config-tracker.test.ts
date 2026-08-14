@@ -31,13 +31,13 @@ function writeJson(filePath: string, value: unknown): void {
 beforeEach(() => {
   globalDir = fs.mkdtempSync(path.join(os.tmpdir(), "peek-global-"));
   projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "peek-project-"));
-  savedAgentDir = process.env.PI_AGENT_DIR;
-  process.env.PI_AGENT_DIR = globalDir;
+  savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = globalDir;
 });
 
 afterEach(() => {
-  if (savedAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-  else process.env.PI_AGENT_DIR = savedAgentDir;
+  if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
   fs.rmSync(globalDir, { recursive: true, force: true });
   fs.rmSync(projectDir, { recursive: true, force: true });
 });

@@ -2,7 +2,7 @@
  * Tests for pi-ask-user settings loading (config.ts).
  * Run: node --test packages/pi-ask-user/src/config.test.ts
  *
- * Uses PI_AGENT_DIR to redirect the "global" settings location into a temp
+ * Uses PI_CODING_AGENT_DIR to redirect the "global" settings location into a temp
  * dir, so tests never touch the real ~/.pi/agent/settings.json.
  */
 
@@ -15,7 +15,7 @@ import { DEFAULT_CONFIG, formatKeyId, loadConfig } from "./config.ts";
 
 let agentDir: string;
 let projectDir: string;
-const previousAgentDir = process.env.PI_AGENT_DIR;
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 function writeSettings(dir: string, obj: unknown): void {
   fs.mkdirSync(dir, { recursive: true });
@@ -30,14 +30,14 @@ function writeProjectSettings(obj: unknown): void {
 beforeEach(() => {
   agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "ask-user-agent-"));
   projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "ask-user-project-"));
-  process.env.PI_AGENT_DIR = agentDir;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
 });
 
 afterEach(() => {
   fs.rmSync(agentDir, { recursive: true, force: true });
   fs.rmSync(projectDir, { recursive: true, force: true });
-  if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-  else process.env.PI_AGENT_DIR = previousAgentDir;
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 });
 
 test("no settings → defaults", () => {

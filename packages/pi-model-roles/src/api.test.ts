@@ -24,11 +24,11 @@ function withSettings(
 ): void | Promise<void> {
   const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-model-roles-"));
   fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify(settings));
-  const previousAgentDir = process.env.PI_AGENT_DIR;
-  process.env.PI_AGENT_DIR = agentDir;
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   const cleanup = () => {
-    if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = previousAgentDir;
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     fs.rmSync(agentDir, { recursive: true, force: true });
   };
   try {
