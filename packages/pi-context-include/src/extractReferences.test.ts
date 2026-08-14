@@ -368,4 +368,73 @@ describe("context include recursive resolution", () => {
     const included = await scanIncludes(project, root, "@accent.md");
     assert.ok(included?.includes(`<project_instructions path="${canonicalAccent}">\né\n</project_instructions>`));
   });
+
+  // ── path safety fence (issue #3) ──
+
+  it("blocks an absolute path outside the default allowed roots", async () => {
+    const project = makeTempProject();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ctx-outside-"));
+    tempDirs.push(outside);
+    const secret = writeFile(outside, "secret.md", "secret content");
+    const root = writeFile(project, "AGENTS.md", `@${secret}`);
+
+    const prompt = await scanIncludes(project, root, `@${secret}`);
+    assert.equal(prompt, undefined);
+  });
+
+  it("allows includes from the agent includes dir by default", async () => {
+    const project = makeTempProject();
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "ctx-agent-"));
+    tempDirs.push(agentDir);
+    const includesDir = path.join(agentDir, "includes");
+    fs.mkdirSync(includesDir);
+    const shared = path.join(includesDir, "shared.md");
+    fs.writeFileSync(shared, "shared rules");
+    const saved = process.env.PI_AGENT_DIR;
+    process.env.PI_AGENT_DIR = agentDir;
+    try {
+      const root = writeFile(project, "AGENTS.md", `@${shared}`);
+      const prompt = await scanIncludes(project, root, `@${shared}`);
+      assert.ok(prompt?.includes("shared rules"));
+    } finally {
+      if (saved === undefined) delete process.env.PI_AGENT_DIR;
+      else process.env.PI_AGENT_DIR = saved;
+    }
+  });
+
+  it("explicit allowedRoots fully replaces the defaults", async () => {
+    const project = makeTempProject();
+    const allowedDir = path.join(project, "allowed");
+    fs.mkdirSync(allowedDir);
+    writeFile(project, "allowed/in.md", "allowed content");
+    writeFile(project, "blocked/out.md", "blocked content");
+    writeConfig(project, { allowedRoots: [allowedDir] });
+    const root = writeFile(project, "AGENTS.md", "@allowed/in.md\n@blocked/out.md");
+
+    const prompt = await scanIncludes(project, root, fs.readFileSync(root, "utf-8"));
+    assert.ok(prompt?.includes("allowed content"));
+    assert.ok(!prompt?.includes("blocked content"));
+  });
+
+  it("deniedRoots takes precedence over the default allow-set", async () => {
+    const project = makeTempProject();
+    writeFile(project, "secrets/secret.md", "leaked");
+    writeFile(project, "ok.md", "ok content");
+    writeConfig(project, { deniedRoots: [path.join(project, "secrets")] });
+    const root = writeFile(project, "AGENTS.md", "@secrets/secret.md\n@ok.md");
+
+    const prompt = await scanIncludes(project, root, fs.readFileSync(root, "utf-8"));
+    assert.ok(prompt?.includes("ok content"));
+    assert.ok(!prompt?.includes("leaked"));
+  });
+
+  it("an explicit empty allowedRoots blocks everything", async () => {
+    const project = makeTempProject();
+    writeFile(project, "a.md", "a");
+    writeConfig(project, { allowedRoots: [] });
+    const root = writeFile(project, "AGENTS.md", "@a.md");
+
+    const prompt = await scanIncludes(project, root, "@a.md");
+    assert.equal(prompt, undefined);
+  });
 });

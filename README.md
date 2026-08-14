@@ -7,7 +7,7 @@ A collection of small extensions for [Pi Coding Agent](https://pi.dev).
 | Package | Description |
 |---------|-------------|
 | [`pi-ask-user`](./packages/pi-ask-user) | Collapsible ask-user tool — panel renders in the bottom editor slot (not a screen overlay), so the transcript stays visible and scrollable above it |
-| [`pi-context-include`](./packages/pi-context-include) | `@path` syntax for AGENTS.md — include files by reference |
+| [`pi-context-include`](./packages/pi-context-include) | `@path` syntax for AGENTS.md — include files by reference, with a path safety fence (allow/deny roots, safe by default) |
 | [`pi-hashline-edit`](./packages/pi-hashline-edit) | Hashline-style file editing — line-anchored edits verified by content hash, replacing oldText/newText matching |
 | [`pi-provider-agnes`](./packages/pi-provider-agnes) | Agnes AI provider — token-billing + token-plan variants sharing the same text models |
 | [`pi-provider-sensenova`](./packages/pi-provider-sensenova) | SenseNova (商汤日日新) Token Plan provider — chat models via OpenAI-compatible API |

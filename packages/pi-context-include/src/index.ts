@@ -18,6 +18,7 @@
  * - Recursive includes (an included file can itself contain `@` references)
  * - Cycle detection + symlink-aware dedup (via realpath)
  * - Configurable depth and size limits via settings.contextInclude
+ * - Path safety fence: includes are confined to allowed roots (deny wins); defaults are safe
  *
  * Syntax: A line starting with `@` followed by a path to a supported file type.
  * ```
@@ -41,6 +42,10 @@ interface IncludedFile {
 interface ContextIncludeConfig {
   maxDepth?: number;
   maxBytes?: number;
+  /** Explicit allow-set; when set it fully replaces the implicit defaults. */
+  allowedRoots?: string[];
+  /** Deny-set; always enforced and takes precedence over allowedRoots. */
+  deniedRoots?: string[];
 }
 
 // ── diagnostics ──────────────────────────────────────────────
@@ -52,6 +57,8 @@ interface ScanDiagnostic {
   totalBytes: number;
   maxBytes: number;
   maxDepth: number;
+  allowedRoots: string[];
+  deniedRoots: string[];
 }
 
 interface ContextFileDiag {
@@ -76,12 +83,21 @@ interface SkippedDiag {
 
 let _maxDepth = DEFAULT_MAX_DEPTH;
 let _maxBytes = DEFAULT_MAX_BYTES;
+/** Raw allow-set from config; undefined means "use implicit defaults". */
+let _allowedRoots: string[] | undefined;
+/** Raw deny-set from config; defaults to none. */
+let _deniedRoots: string[] = [];
+/** Project root captured at session start, used to resolve relative roots. */
+let _cwd: string | undefined;
 let _lastScan: ScanDiagnostic | null = null;
 
 async function loadConfig(cwd?: string): Promise<void> {
   const config = await readContextIncludeConfig(cwd);
   _maxDepth = validLimit(config?.maxDepth) ?? DEFAULT_MAX_DEPTH;
   _maxBytes = validLimit(config?.maxBytes) ?? DEFAULT_MAX_BYTES;
+  _allowedRoots = parseStringArray(config?.allowedRoots);
+  _deniedRoots = parseStringArray(config?.deniedRoots) ?? [];
+  _cwd = cwd;
 }
 
 /** Accept only non-negative finite numeric limits; invalid values use defaults. */
@@ -173,6 +189,10 @@ interface ResolveState {
   maxBytes: number;
   /** Running UTF-8 byte count of included content, enforced during resolution. */
   accumulatedBytes: number;
+  /** Effective allow-set for this scan (defaults already resolved). */
+  allowedRoots: string[];
+  /** Effective deny-set for this scan; takes precedence over allowedRoots. */
+  deniedRoots: string[];
 }
 
 /** Canonical path via realpath, falling back to a resolved path on failure. */
@@ -182,6 +202,95 @@ async function canonicalize(filePath: string): Promise<string> {
   } catch {
     return path.resolve(filePath);
   }
+}
+
+// ── path safety fence ─────────────────────────────────────────
+//
+// Includes inject file content into the system prompt wrapped in pi's
+// high-trust <project_instructions> tag, so an errant `@secrets.json` or
+// `@../../sibling/secret.md` would leak secrets or pull in out-of-scope
+// context on every turn. The fence confines includes to an allow-set of
+// roots (deny takes precedence). It guards against accidents and
+// misconfiguration — not adversaries; anyone who can edit settings.json
+// owns the policy.
+
+/** Accept only arrays of strings; otherwise undefined so callers fall back. */
+function parseStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((v) => typeof v === "string")
+    ? value
+    : undefined;
+}
+
+/** Normalize separators to POSIX `/` for cross-platform prefix comparison. */
+function toPosix(p: string): string {
+  return p.includes("\\") ? p.split("\\").join("/") : p;
+}
+
+/**
+ * True if `target` equals or sits beneath `root`. Mirrors pi-access-denied's
+ * semantics (POSIX-normalized prefix, case-insensitive on Windows drive
+ * letters); reimplemented here to keep this package dependency-free.
+ */
+function underRoot(target: string, root: string): boolean {
+  const t = toPosix(target);
+  const r = toPosix(root);
+  const drive = /^[A-Za-z]:\//;
+  const tt = drive.test(t) ? t.toLowerCase() : t;
+  const rr = drive.test(r) ? r.toLowerCase() : r;
+  if (tt === rr) return true;
+  return tt.startsWith(rr.endsWith("/") ? rr : rr + "/");
+}
+
+/** True if `target` is within any of `roots`. */
+function underAnyRoot(target: string, roots: readonly string[]): boolean {
+  return roots.some((root) => underRoot(target, root));
+}
+
+/**
+ * Resolve root tokens (each `~`-prefixed, absolute, or relative to cwd) into
+ * canonical absolute paths. Non-existent roots fall back to a resolved path,
+ * matching how include targets are canonicalized so prefix comparison aligns.
+ */
+async function resolveRootList(roots: readonly string[], cwd: string): Promise<string[]> {
+  const resolved: string[] = [];
+  for (const root of roots) {
+    let expanded = root;
+    if (expanded.startsWith("~")) {
+      expanded = path.join(os.homedir(), expanded.slice(1));
+    }
+    const abs = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+    resolved.push(await canonicalize(abs));
+  }
+  return resolved;
+}
+
+/**
+ * Compute effective allow/deny roots for a scan.
+ *
+ * `deniedRoots` always come from config (resolved against cwd). `allowedRoots`:
+ * an explicit config value fully replaces the implicit defaults; when unset,
+ * the defaults allow each context file's own directory tree (so in-repo
+ * relative includes work zero-config) plus the shared `~/.pi/agent/includes/`
+ * directory. Upgrades stay non-breaking while includes stay bounded by default.
+ */
+async function computeEffectiveRoots(
+  contextFiles: ReadonlyArray<{ path?: string }>,
+): Promise<{ allowedRoots: string[]; deniedRoots: string[] }> {
+  const cwd = _cwd ?? process.cwd();
+  const deniedRoots = await resolveRootList(_deniedRoots, cwd);
+
+  let allowedRoots: string[];
+  if (_allowedRoots !== undefined) {
+    allowedRoots = await resolveRootList(_allowedRoots, cwd);
+  } else {
+    const defaults = new Set<string>();
+    defaults.add(await canonicalize(path.join(getAgentDir(), "includes")));
+    for (const cf of contextFiles) {
+      if (cf.path) defaults.add(await canonicalize(path.dirname(path.resolve(cf.path))));
+    }
+    allowedRoots = [...defaults];
+  }
+  return { allowedRoots, deniedRoots };
 }
 
 /**
@@ -226,6 +335,17 @@ async function resolveIncludes(
 
     if (state.visited.has(real)) {
       state.diag.skipped.push({ ref, resolvedPath: resolved, reason: "already included" });
+      continue;
+    }
+
+    // Security fence: deny wins, then the allow-set bounds includes.
+    // Evaluated before read so denied/out-of-scope files never load.
+    if (underAnyRoot(real, state.deniedRoots)) {
+      state.diag.skipped.push({ ref, resolvedPath: resolved, reason: "denied by deniedRoots" });
+      continue;
+    }
+    if (!underAnyRoot(real, state.allowedRoots)) {
+      state.diag.skipped.push({ ref, resolvedPath: resolved, reason: "outside allowed roots" });
       continue;
     }
 
@@ -290,6 +410,15 @@ export default function contextIncludeExtension(pi: ExtensionAPI) {
 
       const s = _lastScan;
 
+      // Effective safety-fence roots from the last scan.
+      lines.push("");
+      lines.push(`**Allowed roots** (${s.allowedRoots.length})`);
+      for (const r of s.allowedRoots) lines.push(`  ${r}`);
+      if (s.deniedRoots.length > 0) {
+        lines.push(`**Denied roots** (${s.deniedRoots.length})`);
+        for (const r of s.deniedRoots) lines.push(`  ${r}`);
+      }
+
       // Context files
       lines.push("");
       lines.push(`**Context files** (${s.contextFiles.length})`);
@@ -335,6 +464,8 @@ export default function contextIncludeExtension(pi: ExtensionAPI) {
       return;
     }
 
+    const { allowedRoots, deniedRoots } = await computeEffectiveRoots(contextFiles);
+
     const diag: ScanDiagnostic = {
       contextFiles: [],
       included: [],
@@ -342,6 +473,8 @@ export default function contextIncludeExtension(pi: ExtensionAPI) {
       totalBytes: 0,
       maxBytes: _maxBytes,
       maxDepth: _maxDepth,
+      allowedRoots,
+      deniedRoots,
     };
 
     const state: ResolveState = {
@@ -351,6 +484,8 @@ export default function contextIncludeExtension(pi: ExtensionAPI) {
       maxDepth: _maxDepth,
       maxBytes: _maxBytes,
       accumulatedBytes: 0,
+      allowedRoots,
+      deniedRoots,
     };
 
     for (const ctxFile of contextFiles) {
