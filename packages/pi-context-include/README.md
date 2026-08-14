@@ -51,7 +51,7 @@ On each turn, the extension reads the referenced files and injects their content
 
 ## Supported file types
 
-`.md`, `.txt`, `.yaml`, `.yml`, `.json`, `.toml`
+`.md` only. Structured formats (`.json`/`.yaml`/`.toml`) are intentionally excluded — they typically hold config or credentials, not instructions, and are better read on demand.
 
 ## Configuration
 

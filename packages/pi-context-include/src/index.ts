@@ -149,8 +149,8 @@ export function extractReferences(content: string): string[] {
   const seen = new Set<string>();
   const lines = content.split("\n");
 
-  // @ at start of line, path ending with supported extension, nothing else on line
-  const refPattern = /^@([~.]?[\w./-]+\.(?:md|txt|yaml|yml|json|toml))$/;
+  // @ at start of line, path ending in .md, nothing else on line
+  const refPattern = /^@([~.]?[\w./-]+\.md)$/;
 
   let inFencedBlock = false;
 

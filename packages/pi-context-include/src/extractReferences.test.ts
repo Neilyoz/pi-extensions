@@ -24,8 +24,8 @@ describe("extractReferences", () => {
   });
 
   it("resolves absolute path", () => {
-    const refs = extractReferences("@/etc/config.toml");
-    assert.deepStrictEqual(refs, ["/etc/config.toml"]);
+    const refs = extractReferences("@/etc/config.md");
+    assert.deepStrictEqual(refs, ["/etc/config.md"]);
   });
 
   it("resolves home directory path", () => {
@@ -35,28 +35,14 @@ describe("extractReferences", () => {
 
   // ── supported extensions ──
 
-  it("matches all supported extensions", () => {
-    const content = [
-      "@file.md",
-      "@file.txt",
-      "@file.yaml",
-      "@file.yml",
-      "@file.json",
-      "@file.toml",
-    ].join("\n");
-    const refs = extractReferences(content);
-    assert.deepStrictEqual(refs, [
-      "file.md",
-      "file.txt",
-      "file.yaml",
-      "file.yml",
-      "file.json",
-      "file.toml",
-    ]);
+  it("matches .md files", () => {
+    const refs = extractReferences("@file.md");
+    assert.deepStrictEqual(refs, ["file.md"]);
   });
 
-  it("ignores unsupported extension", () => {
-    const refs = extractReferences("@script.py");
+  it("ignores non-.md extensions", () => {
+    const content = ["@script.py", "@data.json", "@config.yaml", "@cfg.toml", "@notes.txt"].join("\n");
+    const refs = extractReferences(content);
     assert.deepStrictEqual(refs, []);
   });
 
@@ -212,18 +198,18 @@ describe("extractReferences", () => {
       "## Example usage",
       "```",
       "@do-not-resolve.md",
-      "@also-ignored.yaml",
+      "@also-ignored.md",
       "```",
       "",
       "@~/.agents/CODEGRAPH.md",
-      "@/etc/myapp/config.toml",
+      "@/etc/myapp/config.md",
     ].join("\n");
     const refs = extractReferences(content);
     assert.deepStrictEqual(refs, [
       "CODEGRAPH.md",
       "docs/api-conventions.md",
       "~/.agents/CODEGRAPH.md",
-      "/etc/myapp/config.toml",
+      "/etc/myapp/config.md",
     ]);
   });
 });
