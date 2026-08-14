@@ -180,9 +180,9 @@ for (const dir of packageDirs) {
     const parsed = parseCommit(message);
     if (!parsed) continue;
 
-    // Check if this commit targets our package
-    // Match by scope name: feat(context-include) matches "context-include" dir
-    if (parsed.scope && parsed.scope !== dir) continue;
+    // A commit targets a package only if its scope matches the package dir.
+    // Unscoped commits match nothing — they never trigger a publish.
+    if (parsed.scope !== dir) continue;
 
     const isRelevantType = ["feat", "fix"].includes(parsed.type);
     if (!isRelevantType) continue;
