@@ -1,6 +1,6 @@
 {
   "name": "@d3ara1n/pi-provider-stepfun",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "StepFun (阶跃星辰) provider for pi — Step 3.x Flash models via OpenAI-compatible API",
   "keywords": [
