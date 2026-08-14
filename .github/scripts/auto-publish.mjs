@@ -262,7 +262,9 @@ if (failed > 0) {
 if (published > 0) {
   // Fetch + rebase to avoid rejected push when remote moved ahead.
   run("git fetch origin main");
-  run("git rebase origin/main");
+  // Rebase needs a committer identity when it replays commits (diverged remote),
+  // same as commit/tag above — otherwise: "Committer identity unknown".
+  run(`git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" rebase origin/main`);
   // Push version bump commits + all tags (lightweight tags aren't picked up by --follow-tags)
   run("git push");
   run("git push --tags");
