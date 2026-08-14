@@ -123,7 +123,7 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
     description: "Regenerate session name from the first exchange",
     handler: async (_args, ctx) => {
       const { user: firstUser, assistant: firstAssistant } = getFirstExchange(
-        ctx.sessionManager.getEntries(),
+        ctx.sessionManager.getBranch(),
       );
       if (!firstUser?.trim()) {
         ctx.ui.notify("No user prompt available to generate a name from.", "warning");
@@ -165,10 +165,13 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
 }
 
 /**
- * Extract the first user message and first assistant reply from session entries.
+ * Extract the first user message and first assistant reply from the active
+ * branch (leaf → root path), excluding entries on abandoned branches.
  *
- * Read live from the session manager rather than a cached variable, so it
- * survives extension reloads (which reset closure state).
+ * Uses getBranch() rather than getEntries(): the session file is append-only,
+ * so after re-editing the first message (resetLeaf → new root) the old root
+ * still precedes the new one in getEntries() and would be picked by mistake.
+ * Read live so it survives extension reloads (which reset closure state).
  */
 function getFirstExchange(entries: unknown[]): { user?: string; assistant?: string } {
   const result: { user?: string; assistant?: string } = {};
