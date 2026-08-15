@@ -402,7 +402,7 @@ describe("terminalResultLine", () => {
       "\u23F1 Timed out after 900s",
     );
   });
-  test("budget-exceeded is a warning line even though the run state is succeeded", () => {
+  test("budget-exceeded is a warning line even though the run state is finished", () => {
     assert.equal(
       terminalResultLine(
         baseResult({ stopReason: "budget_exceeded", errorMessage: "Budget exceeded (50 turns; partial output returned)" }),
@@ -416,7 +416,7 @@ describe("terminalResultLine", () => {
     assert.equal(terminalResultLine(baseResult(), id), "\u2713 ok");
     assert.equal(terminalResultLine(baseResult({ output: "" }), id), "\u2713 (no output)");
   });
-  test("succeededText replaces the success chain (wait's status-only line)", () => {
+  test("finishedText replaces the success chain (wait's status-only line)", () => {
     assert.equal(terminalResultLine(baseResult(), id, "finished"), "\u2713 finished");
   });
 });
@@ -525,11 +525,11 @@ describe("background run helpers", () => {
   test("deriveRunState maps frames to lifecycle states", () => {
     assert.equal(deriveRunState(queuedFrame()), "queued");
     assert.equal(deriveRunState(runningFrame()), "running");
-    assert.equal(deriveRunState(baseResult()), "succeeded");
+    assert.equal(deriveRunState(baseResult()), "finished");
     assert.equal(deriveRunState(baseResult({ exitCode: 1 })), "failed");
     assert.equal(deriveRunState(baseResult({ stopReason: "timeout", exitCode: 124 })), "failed");
-    // budget stops are intentional successes
-    assert.equal(deriveRunState(baseResult({ stopReason: "budget_exceeded" })), "succeeded");
+    // budget stops are intentional finishes
+    assert.equal(deriveRunState(baseResult({ stopReason: "budget_exceeded" })), "finished");
   });
 
   test("isWaitTimedOut only matches the explicit timeout flag", () => {

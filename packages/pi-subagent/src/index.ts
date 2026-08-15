@@ -24,6 +24,7 @@ import { getPiInvocation } from "./spawn.ts";
 import {
   AsyncSemaphore,
   createThrottler,
+  describeCurrentActivity,
   formatBudgetNote,
   formatCheckText,
   formatFallbackNote,
@@ -33,6 +34,7 @@ import {
   hasFailedSubagentResult,
   isFailedResult,
   isWaitTimedOut,
+  taskPreview,
 } from "./utils.ts";
 import { startSubagentRun, type RunHandle } from "./run.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
@@ -130,7 +132,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       ...exampleLines,
       "",
       "For multiple independent substantial tasks, emit multiple subagent_delegate calls in one turn — they run in parallel.",
-      "Include ALL necessary context — subagents have no access to this conversation.",
+      "Subagents have no access to this conversation — everything they need must come through `task`, `context`, and `files`.",
       'Pass reference files via the `files` parameter (e.g. files: ["src/auth.ts"]) instead of pasting their contents into `context` — the subagent reads them directly without consuming your context window.',
       "Override the model per-call with the `model` parameter for one-off vision or model-specific jobs.",
       "",
@@ -138,9 +140,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
       "",
       "- subagent_delegate(background: true) starts a run and returns immediately with just an id (sub-N). The run is unaffected by turn cancellation.",
       "- After starting background runs, keep working (or start more); then subagent_wait(ids) blocks until every listed run reaches a final state (omit ids to wait for all of them).",
-      "- subagent_wait returns ONLY each run's status (succeeded/failed) — it never returns results. With timeout_ms it errors if anything is still unfinished.",
+      "- subagent_wait returns ONLY each run's status (finished/failed, one `id (role): status` line per run) — it never returns results. With timeout_ms it errors if anything is still unfinished.",
       "- subagent_check(id) is the result-fetcher: for a finished run it returns the full output; mid-run it returns a snapshot (queued/running + current activity). One id per call — results can be large.",
-      "- Typical flow: subagent_delegate(background: true) ×N → work on something else → subagent_wait([id1, id2, ...]) → subagent_check(id) for each succeeded run.",
+      "- Typical flow: subagent_delegate(background: true) ×N → work on something else → subagent_wait([id1, id2, ...]) → subagent_check(id) for each finished run.",
       "- Background delegation works only in the top-level session.",
     );
   }
@@ -209,17 +211,20 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_delegate",
     label: "Delegate to subagent",
     description:
-      "Offload work to a specialized subagent to keep your own context clean and focused. Prefer this over doing work yourself when a task would generate many tool calls or verbose output. Subagents have isolated context — include all necessary info in the task description. Set background: true to run asynchronously: the call returns an id immediately and you collect the result later with subagent_wait/subagent_check.",
+      "Delegate a task to a specialized subagent. By default the call blocks until the run finishes and returns the final output — intermediate tool output stays out of your context. With background: true it returns an id immediately and you collect the result later with subagent_wait/subagent_check. Subagents have no access to this conversation — everything they need must arrive through the parameters.",
     promptSnippet: "Delegate tasks to specialized subagents",
     promptGuidelines: guidelines,
 
     parameters: Type.Object({
       role: Type.String({ description: "Subagent role to use" }),
-      task: Type.String({ description: "Specific task for the subagent" }),
+      task: Type.String({
+        description:
+          "The work to do. Instructions only — background material belongs in `context`, reference file paths in `files`.",
+      }),
       context: Type.Optional(
         Type.String({
           description:
-            "Extra context to give the subagent (selected code, prior results, file list, etc.). Delivered as a separate channel from the task. Omit if the task alone is enough.",
+            "Background material for the subagent — prior findings, selected code, file lists; can be long. Delivered as a separate channel from the task. Omit if the task alone is enough.",
         }),
       ),
       files: Type.Optional(
@@ -403,7 +408,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_wait",
     label: "Wait for background subagents",
     description:
-      "Block until one or more background subagents (started via subagent_delegate with background: true) finish. Omit ids to wait for ALL current background runs. Returns each run's final status ONLY (succeeded/failed) — fetch the actual results afterwards with subagent_check. If timeout_ms elapses before every run finishes, returns an error listing per-run statuses. Cancelling the wait never cancels the runs.",
+      "Block until one or more background subagents (started via subagent_delegate with background: true) finish. Omit ids to wait for ALL current background runs. Returns ONLY each run's final status — one `id (role): finished/failed` line per run, never the results; fetch them afterwards with subagent_check. If timeout_ms elapses before every run finishes, returns an error listing per-run statuses. Cancelling the wait never cancels the runs.",
     promptSnippet: "Wait for background subagents to finish",
     parameters: Type.Object({
       ids: Type.Optional(
@@ -430,7 +435,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       }
       const unknown = ids.filter((id) => !backgroundRuns.has(id));
       if (unknown.length > 0) {
-        const known = [...backgroundRuns.keys()];
+        const known = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
         throw new Error(
           `Unknown subagent id(s): ${unknown.join(", ")}. Known: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
         );
@@ -442,12 +447,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
       // ── Live mirror: forward combined snapshots into this tool row ──
       const entries = () => runs.map((r) => ({ id: r.id, role: r.role, result: r.snapshot }));
       const emit = () => {
-        const counts = { queued: 0, running: 0, succeeded: 0, failed: 0 };
+        const counts = { queued: 0, running: 0, finished: 0, failed: 0 };
         for (const r of runs) counts[r.state]++;
         const parts: string[] = [];
         if (counts.running) parts.push(`${counts.running} running`);
         if (counts.queued) parts.push(`${counts.queued} queued`);
-        parts.push(`${counts.succeeded} succeeded`);
+        parts.push(`${counts.finished} finished`);
         parts.push(`${counts.failed} failed`);
         onUpdate?.({
           content: [{ type: "text", text: `waiting: ${parts.join(", ")}` }],
@@ -502,14 +507,15 @@ export default function subagentExtension(pi: ExtensionAPI) {
         for (const u of unsubscribers) u();
       }
 
-      // Budget-stopped runs report "succeeded" but their output is partial —
-      // flag it inline so the model knows to treat it as such.
+      // Status line per run — same `id (role): state` shape check uses, so
+      // the model can map ids to roles from wait output alone. Budget-stopped
+      // runs report "finished" but their output is partial — flag it inline.
       const perId = () =>
         runs
           .map((r) =>
             r.result?.stopReason === "budget_exceeded"
-              ? `${r.id}: ${r.state} (budget exceeded — output is partial)`
-              : `${r.id}: ${r.state}`,
+              ? `${r.id} (${r.role}): ${r.state} (budget exceeded — output is partial)`
+              : `${r.id} (${r.role}): ${r.state}`,
           )
           .join("\n");
       if (timedOut) {
@@ -545,7 +551,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const run = backgroundRuns.get(params.id);
       if (!run) {
-        const known = [...backgroundRuns.keys()];
+        const known = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
         throw new Error(
           `Unknown subagent id: ${params.id}. Known: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
         );
@@ -639,17 +645,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
         allOk = false;
       }
 
-      // 5. background registry
-      if (backgroundRuns.size > 0) {
-        lines.push("[i] background runs:");
-        for (const [id, run] of backgroundRuns) {
-          lines.push(`    ${id} ${run.role}: ${run.state}`);
-        }
-      } else {
-        lines.push("[i] background runs: (none)");
-      }
-
-      // 6. runtime context
+      // 5. runtime context
       const allowed = process.env.PI_SUBAGENT_ALLOWED;
       if (allowed) lines.push(`[i] PI_SUBAGENT_ALLOWED: ${allowed}`);
       lines.push(
@@ -658,6 +654,38 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
       const summary = allOk ? "All checks passed" : "Some checks failed";
       ctx.ui.notify(`${summary}\n\n${lines.join("\n")}`, "info");
+    },
+  });
+
+  pi.registerCommand("subagent:status", {
+    description: "List background subagent runs and their current state",
+    handler: async (_args, ctx) => {
+      if (backgroundRuns.size === 0) {
+        ctx.ui.notify("No background runs.", "info");
+        return;
+      }
+      const lines: string[] = [];
+      for (const run of backgroundRuns.values()) {
+        // Freeze live frames so elapsed-dependent details don't drift in the listing.
+        const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
+        let icon: string;
+        let detail: string;
+        if (run.state === "failed") {
+          icon = "\u2717";
+          detail = snap.errorMessage || "unknown error";
+        } else if (run.state === "finished") {
+          icon = "\u2713";
+          detail = snap.summary || taskPreview(snap.output) || "(no output)";
+        } else if (run.state === "queued") {
+          icon = "\u23F8";
+          detail = "queued — waiting for a concurrency slot";
+        } else {
+          icon = "\u23F3";
+          detail = `running — ${describeCurrentActivity(snap)}`;
+        }
+        lines.push(`${icon} ${run.id} (${run.role}): ${detail}`);
+      }
+      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 }

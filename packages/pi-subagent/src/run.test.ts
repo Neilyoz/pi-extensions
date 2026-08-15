@@ -82,7 +82,7 @@ test("run starts queued, transitions to running, then succeeds", async () => {
   const result = await run.promise;
   unsubscribe();
 
-  assert.strictEqual(run.state, "succeeded");
+  assert.strictEqual(run.state, "finished");
   assert.strictEqual(run.result, result);
   assert.strictEqual(result.output, "done");
   // Terminal frames carry the registry role name (spawn itself never learns it).
@@ -106,7 +106,7 @@ test("run stays queued while the concurrency gate is full", async () => {
 
   gate.release();
   const result = await run.promise;
-  assert.strictEqual(run.state, "succeeded");
+  assert.strictEqual(run.state, "finished");
   assert.strictEqual(result.output, "late");
 });
 
@@ -155,7 +155,7 @@ test("provider error on first attempt retries on the fallback role", async () =>
   const result = await run.promise;
 
   assert.deepStrictEqual(calls, ["test/model-fast", "test/model-default"]);
-  assert.strictEqual(run.state, "succeeded");
+  assert.strictEqual(run.state, "finished");
   assert.strictEqual(result.output, "fallback ok");
   assert.ok(result.fallbackFrom, "terminal result records the failed first attempt");
   assert.strictEqual(result.fallbackFrom.model, "test/model-fast");

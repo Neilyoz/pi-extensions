@@ -135,7 +135,7 @@ function waitEntryExpandedContainer(entry: RunViewEntry, fg: Fg): Container {
   container.addChild(new Text(waitStatusLine(entry, fg), 0, 0));
   addFallbackRow(container, r, fg);
   container.addChild(new Spacer(1));
-  if (state === "succeeded" || state === "failed") {
+  if (state === "finished" || state === "failed") {
     container.addChild(new Text(terminalResultLine(r, fg, "finished"), 0, 0));
     container.addChild(new Spacer(1));
   }
@@ -193,7 +193,7 @@ function checkEntryExpandedContainer(r: SubagentResult, fg: Fg): Container {
   addFallbackRow(container, r, fg);
   container.addChild(new Spacer(1));
 
-  if (state === "succeeded" || state === "failed") {
+  if (state === "finished" || state === "failed") {
     container.addChild(new Text(terminalResultLine(r, fg), 0, 0));
     // check is the result-fetcher: the full output lives here.
     container.addChild(new Spacer(1));

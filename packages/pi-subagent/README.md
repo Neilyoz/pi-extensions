@@ -52,7 +52,8 @@ This means:
 
 | Command | Description |
 |---------|-------------|
-| `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, role references, and list background runs |
+| `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, and role references |
+| `/subagent:status` | List background subagent runs and their current state |
 
 ## Dependencies
 
@@ -179,7 +180,7 @@ Foreground and background delegation share one async run engine — foreground i
 | Tool | Purpose | Returns to the model |
 |------|---------|---------------------|
 | `subagent_delegate(background: true)` | Start an async run | Just the id (`sub-N`) |
-| `subagent_wait(ids?, timeout_ms?)` | Block until **all** listed runs finish (omit `ids` for all current background runs) | Statuses only (`sub-1: succeeded`) — never results; errors when the timeout hits with runs unfinished |
+| `subagent_wait(ids?, timeout_ms?)` | Block until **all** listed runs finish (omit `ids` for all current background runs) | Statuses only, one `id (role): finished/failed` line per run — never results; errors when the timeout hits with runs unfinished |
 | `subagent_check(id)` | One-shot snapshot of a single run | `queued` / `running` + current activity / the **full output** once finished / failure reason + partial output |
 
 Typical flow:
@@ -197,7 +198,7 @@ Typical flow:
 { "ids": ["sub-1", "sub-2"] }
 ```
 
-(call `subagent_wait`), and finally `subagent_check` each succeeded id to fetch its result. `subagent_check` accepts one id per call because results can be large.
+(call `subagent_wait`), and finally `subagent_check` each finished id to fetch its result. `subagent_check` accepts one id per call because results can be large.
 
 Semantics worth knowing:
 
@@ -205,7 +206,7 @@ Semantics worth knowing:
 - **`timeout_ms` is optional.** Without it, `subagent_wait` blocks until every run finishes; each run is still bounded by its own role timeout.
 - Background runs share the global `maxConcurrency` gate — extra runs show up as `queued` in wait/check views.
 - **Top-level only:** nested subagents cannot delegate in the background (a subagent process exits when its task finishes, which would orphan the run).
-- The run registry lives in the pi process: a `/reload` or restart orphans in-flight background runs (their ids stop resolving).
+- The run registry lives in the pi process: a `/reload` or restart orphans in-flight background runs (their ids stop resolving). `/subagent:status` lists every registered run and its current state.
 
 ### Background TUI display
 
@@ -247,7 +248,7 @@ Each path is injected as an independent `@file` attachment the subagent reads di
 
 ### Budget enforcement
 
-`maxTurns` / `maxCost` cap a run. When exceeded, the child is killed and the last completed output is returned with `stopReason: "budget_exceeded"`. Budget stops are **intentional successes** — the output is partial but valid: the TUI marks the run with a ⏲ line stating the reason, `subagent_wait` reports `succeeded (budget exceeded — output is partial)`, and the tool result (and `subagent_check`) append a `--- Budget exceeded (...) ---` note so the model knows to treat the output as partial. Defaults are unlimited (`0`); set global defaults in config or per-role overrides in `agentOverrides`. Negative values are normalized to `0`.
+`maxTurns` / `maxCost` cap a run. When exceeded, the child is killed and the last completed output is returned with `stopReason: "budget_exceeded"`. Budget stops are **intentional finishes** — the output is partial but valid: the TUI marks the run with a ⏲ line stating the reason, `subagent_wait` reports `finished (budget exceeded — output is partial)`, and the tool result (and `subagent_check`) append a `--- Budget exceeded (...) ---` note so the model knows to treat the output as partial. Defaults are unlimited (`0`); set global defaults in config or per-role overrides in `agentOverrides`. Negative values are normalized to `0`.
 
 ### Oversized outputs
 

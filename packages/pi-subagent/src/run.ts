@@ -127,7 +127,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
     result = terminal;
     snapshot = terminal;
     thrown = error;
-    currentState = isFailedResult(terminal) ? "failed" : "succeeded";
+    currentState = isFailedResult(terminal) ? "failed" : "finished";
     notify();
     resolvePromise(terminal);
   };

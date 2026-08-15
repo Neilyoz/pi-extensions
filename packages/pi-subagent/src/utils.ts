@@ -300,7 +300,7 @@ function successResultText(r: {
 /**
  * Composed terminal result line `<icon> <content>`. Budget stops count as the
  * failure presentation (their output is partial and the reason matters), even
- * though the run state itself is "succeeded". `succeededText` (wait's
+ * though the run state itself is "finished". `finishedText` (wait's
  * "finished") replaces the success chain for status-only views.
  */
 export function terminalResultLine(
@@ -313,14 +313,14 @@ export function terminalResultLine(
     output: string;
   },
   fg: (color: string, text: string) => string,
-  succeededText?: string,
+  finishedText?: string,
 ): string {
   const icon = runIcon(r, fg);
   if (isFailedResult(r) || r.stopReason === "budget_exceeded") {
     const t = failureResultText(r);
     return `${icon} ${fg(t.col, t.content)}`;
   }
-  if (succeededText !== undefined) return `${icon} ${fg("text", succeededText)}`;
+  if (finishedText !== undefined) return `${icon} ${fg("text", finishedText)}`;
   const t = successResultText(r);
   return `${icon} ${fg(t.col, t.content)}`;
 }
@@ -444,7 +444,7 @@ export function formatFallback(f: FallbackFrom): string {
 /** Derive the lifecycle state of a run from one of its frames (live or terminal). */
 export function deriveRunState(r: { exitCode: number; queued?: boolean; stopReason?: string }): RunState {
   if (r.exitCode === -1) return r.queued ? "queued" : "running";
-  return isFailedResult(r) ? "failed" : "succeeded";
+  return isFailedResult(r) ? "failed" : "finished";
 }
 
 /** True when wait tool result details carries the timeout flag. */

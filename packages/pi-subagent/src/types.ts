@@ -185,7 +185,7 @@ export interface SubagentDetails {
 // ── Background delegation (delegate background:true / wait / check) ──────
 
 /** Lifecycle state of a delegation run, derived from the latest snapshot frame. */
-export type RunState = "queued" | "running" | "succeeded" | "failed";
+export type RunState = "queued" | "running" | "finished" | "failed";
 
 /** Details for a background delegate result — the input snapshot for the TUI's static input block. */
 export interface BackgroundDelegateDetails {

@@ -541,7 +541,7 @@ export async function spawnSubagent(
           result.stopReason = "error";
         }
 
-        // Budget stops are intentional (success); timeouts and external kills
+        // Budget stops are intentional (finished); timeouts and external kills
         // are failures (non-zero); otherwise use the real exit code.
         resolve(budgetExceeded ? 0 : wasTimeout || externalKill ? (code ?? 128) : (code ?? 0));
       });
