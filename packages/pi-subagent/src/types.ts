@@ -184,3 +184,40 @@ export interface SubagentDetails {
   mode: "single";
   results: SubagentResult[];
 }
+
+// ── Background delegation (delegate background:true / wait / check) ──────
+
+/** Lifecycle state of a delegation run, derived from the latest snapshot frame. */
+export type RunState = "queued" | "running" | "succeeded" | "failed";
+
+/** Details for a background delegate result — the input snapshot for the TUI's static input block. */
+export interface BackgroundDelegateDetails {
+  /** Registry id (sub-N) the model uses with wait/check. */
+  id: string;
+  role: string;
+  task: string;
+  context?: string;
+  files?: string[];
+}
+
+/** One watched run inside a wait/check view. */
+export interface RunViewEntry {
+  id: string;
+  role: string;
+  /** Live frame while running, terminal result once finished. */
+  result: SubagentResult;
+}
+
+/** Details for wait tool updates/results — the combined live view of all watched runs. */
+export interface WaitDetails {
+  entries: RunViewEntry[];
+  /** True when the wait timed out with unfinished runs (marks the tool result as an error). */
+  timedOut?: boolean;
+}
+
+/** Details for a check tool result — a frozen one-shot snapshot of a single run. */
+export interface CheckDetails {
+  id: string;
+  role: string;
+  result: SubagentResult;
+}

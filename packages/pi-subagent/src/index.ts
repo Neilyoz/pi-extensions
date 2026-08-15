@@ -2,6 +2,11 @@
  * pi-subagent — Role-based subagent orchestration with TUI rendering.
  *
  * Delegates tasks to specialized pi child processes with:
+ * - One shared async run engine (./run.ts): foreground delegation is
+ *   background delegation that the tool call blocks on
+ * - `subagent_delegate(background: true)` starts a run and returns an id
+ *   immediately; `subagent_wait` blocks on ids, `subagent_check` fetches a
+ *   one-shot snapshot/result
  * - Real-time progress streaming via TUI (tool calls, turns, elapsed time)
  * - AI-generated one-line summary for compact display (configurable role)
  * - All messages collected for expanded view (Ctrl+O)
@@ -10,31 +15,32 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { ModelRolesAPI, ThinkingLevel } from "@d3ara1n/pi-model-roles";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
-import type { FallbackFrom, SubagentConfig, SubagentResult, SubagentRole } from "./types.ts";
+import type { SubagentConfig, SubagentResult, SubagentRole } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { loadSubagentConfig } from "./config.ts";
 import { BUILTIN_ROLES } from "./roles.ts";
-import { spawnSubagent, getPiInvocation } from "./spawn.ts";
+import { getPiInvocation } from "./spawn.ts";
 import {
-  MAX_OUTPUT_CHARS,
-  formatTokens,
   AsyncSemaphore,
-  isProviderError,
-  effectiveTimeout,
-  buildFallbackFrom,
-  formatFallback,
+  PROGRESS_THROTTLE_MS,
+  formatCheckText,
+  formatFallbackNote,
+  formatUsageFooter,
+  freezeFrame,
   hasFailedSubagentResult,
+  isWaitTimedOut,
 } from "./utils.ts";
-import { persistSubagentHistory } from "./history.ts";
-import { compressOutput, generateSummary } from "./output.ts";
+import { startSubagentRun, type RunHandle } from "./run.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
-
-// ── Helpers ────────────────────────────────────────────────────
-
-/** Coalesce bursty progress events so the TUI repaints at most this often. */
-const PROGRESS_THROTTLE_MS = 50;
+import {
+  renderBackgroundDelegateCall,
+  renderBackgroundDelegateResult,
+  renderCheckCall,
+  renderCheckResult,
+  renderWaitCall,
+  renderWaitResult,
+} from "./render-async.ts";
 
 // ── Extension entry ────────────────────────────────────────────────
 
@@ -69,6 +75,26 @@ export default function subagentExtension(pi: ExtensionAPI) {
     }
   }
 
+  // ── Background run registry ────────────────────────────────────
+  // Process-lifetime map of background runs. Foreground delegate runs are NOT
+  // registered — their lifecycle is the tool call itself. Cleared never: ids
+  // must stay resolvable so check can fetch results long after wait returned.
+  const backgroundRuns = new Map<string, RunHandle>();
+  let runCounter = 0;
+
+  function registerBackgroundRun(run: RunHandle): void {
+    backgroundRuns.set(run.id, run);
+    // Terminal snapshots never feed the TUI from messages (renderers only read
+    // output/activityLog) and history is already persisted by the engine — drop
+    // the message bodies so long-lived registries don't accumulate tool output.
+    const stop = run.subscribe(() => {
+      if (run.result) {
+        run.result.messages = [];
+        stop();
+      }
+    });
+  }
+
   // Mutable guidelines array — rebuilt in session_start to reflect agentOverrides
   const guidelines: string[] = [];
 
@@ -79,11 +105,11 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
     for (const [name, role] of entries) {
       // Decision flow
-      decisionLines.push(`  ${role.decisionTrigger} → delegate(${name})`);
+      decisionLines.push(`  ${role.decisionTrigger} → subagent_delegate(${name})`);
 
       // Concrete examples — one line per role with comma-separated examples
       const quotedExamples = role.examples.map((e) => `"${e}"`).join(", ");
-      exampleLines.push(`  delegate(${name}):  ${quotedExamples}`);
+      exampleLines.push(`  subagent_delegate(${name}):  ${quotedExamples}`);
     }
 
     guidelines.length = 0;
@@ -106,10 +132,19 @@ export default function subagentExtension(pi: ExtensionAPI) {
       "",
       ...exampleLines,
       "",
-      "For multiple independent substantial tasks, emit multiple delegate calls in one turn — they run in parallel.",
+      "For multiple independent substantial tasks, emit multiple subagent_delegate calls in one turn — they run in parallel.",
       "Include ALL necessary context — subagents have no access to this conversation.",
       'Pass reference files via the `files` parameter (e.g. files: ["src/auth.ts"]) instead of pasting their contents into `context` — the subagent reads them directly without consuming your context window.',
-      'Override the model per-call with the `model` parameter for one-off vision or model-specific jobs.',
+      "Override the model per-call with the `model` parameter for one-off vision or model-specific jobs.",
+      "",
+      "BACKGROUND DELEGATION — start runs now, collect results later:",
+      "",
+      "- subagent_delegate(background: true) starts a run and returns immediately with just an id (sub-N). The run is unaffected by turn cancellation.",
+      "- After starting background runs, keep working (or start more); then subagent_wait(ids) blocks until every listed run reaches a final state (omit ids to wait for all of them).",
+      "- subagent_wait returns ONLY each run's status (succeeded/failed) — it never returns results. With timeout_ms it errors if anything is still unfinished.",
+      "- subagent_check(id) is the result-fetcher: for a finished run it returns the full output; mid-run it returns a snapshot (queued/running + current activity). One id per call — results can be large.",
+      "- Typical flow: subagent_delegate(background: true) ×N → work on something else → subagent_wait([id1, id2, ...]) → subagent_check(id) for each succeeded run.",
+      "- Background delegation works only in the top-level session.",
     );
   }
 
@@ -173,15 +208,19 @@ export default function subagentExtension(pi: ExtensionAPI) {
   });
 
   pi.on("tool_result", (event) => {
-    if (event.toolName !== "delegate") return;
-    if (hasFailedSubagentResult(event.details)) return { isError: true };
+    if (event.toolName === "subagent_delegate" && hasFailedSubagentResult(event.details)) {
+      return { isError: true };
+    }
+    if (event.toolName === "subagent_wait" && isWaitTimedOut(event.details)) {
+      return { isError: true };
+    }
   });
 
   pi.registerTool({
-    name: "delegate",
+    name: "subagent_delegate",
     label: "Delegate to subagent",
     description:
-      "Offload work to a specialized subagent to keep your own context clean and focused. Prefer this over doing work yourself when a task would generate many tool calls or verbose output. Subagents have isolated context — include all necessary info in the task description.",
+      "Offload work to a specialized subagent to keep your own context clean and focused. Prefer this over doing work yourself when a task would generate many tool calls or verbose output. Subagents have isolated context — include all necessary info in the task description. Set background: true to run asynchronously: the call returns an id immediately and you collect the result later with subagent_wait/subagent_check.",
     promptSnippet: "Delegate tasks to specialized subagents",
     promptGuidelines: guidelines,
 
@@ -200,6 +239,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
             'Reference file paths for the subagent to read directly (e.g. ["src/auth.ts", "docs/api.md"]). Injected as @file attachments — content stays out of your context window. Prefer this over pasting file contents into context.',
         }),
       ),
+      background: Type.Optional(
+        Type.Boolean({
+          description:
+            "Run asynchronously: returns an id (sub-N) immediately instead of blocking. Then subagent_wait(ids) to await completion and subagent_check(id) to fetch each result. The run survives turn cancellation.",
+        }),
+      ),
       cwd: Type.Optional(Type.String({ description: "Working directory (defaults to current)" })),
       model: Type.Optional(
         Type.String({
@@ -210,7 +255,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const gate = concurrencyGate;
       const roleDef = availableRoles[params.role];
       if (!roleDef) {
         return {
@@ -231,352 +275,321 @@ export default function subagentExtension(pi: ExtensionAPI) {
         );
       }
 
-      // Throttle state hoisted to the execute scope so the finally block can clear it.
-      // (try-body `let` is invisible to catch/finally — JS gives each its own block scope.)
-      let pendingPartial: Partial<SubagentResult> | undefined;
+      // A subagent process exits when its task finishes, which would orphan any
+      // background run it started — background delegation is top-level only.
+      if (params.background && CURRENT_DEPTH > 0) {
+        throw new Error(
+          "Background delegation is only available in the top-level session. Delegate in the foreground instead.",
+        );
+      }
+
+      const run = startSubagentRun({
+        id: `sub-${++runCounter}`,
+        toolCallId: _toolCallId,
+        role: params.role,
+        roleDef,
+        task: params.task,
+        context: params.context,
+        files: params.files,
+        cwd: params.cwd ?? ctx.cwd,
+        depth: CURRENT_DEPTH + 1,
+        // Foreground runs die with the tool call; background runs outlive the turn.
+        signal: params.background ? undefined : signal,
+        modelOverride: params.model,
+        config,
+        gate: concurrencyGate,
+        getRolesApi: getModelRolesAPI,
+        getSessionId: () => ctx.sessionManager?.getSessionId(),
+      });
+
+      // ── Background: return the id immediately; the pipeline keeps running. ──
+      if (params.background) {
+        registerBackgroundRun(run);
+        return {
+          content: [
+            { type: "text", text: `Background subagent started — id: ${run.id} (${params.role}).` },
+          ],
+          details: {
+            id: run.id,
+            role: params.role,
+            task: params.task,
+            context: params.context,
+            files: params.files,
+          },
+        };
+      }
+
+      // ── Foreground: the same async engine, blocked on here. ──
+      // Throttle state hoisted to the execute scope so the finally block can
+      // clear it (try-body `let` is invisible to finally — separate block scope).
+      let pendingFrame: SubagentResult | undefined;
       let throttleHandle: ReturnType<typeof setTimeout> | undefined;
 
-      // Flush a terminal onUpdate so the TUI's final render reflects the
-      // real outcome (✓/✗/⏱/⏲), not a stale "running" ⏳ partial. Without it,
-      // the last onUpdate the framework saw was an exitCode:-1 progress frame,
-      // so the finished delegate block can keep showing the hourglass (residue).
-      // Hoisted to execute scope (not try-body) so catch can flush on abort too.
-      const emitFinal = (results: SubagentResult[], text: string) => {
-        if (!onUpdate) return;
-        if (throttleHandle !== undefined) {
-          clearTimeout(throttleHandle);
-          throttleHandle = undefined;
-        }
-        pendingPartial = undefined;
-        onUpdate({
+      const emit = (results: SubagentResult[], text: string) => {
+        onUpdate?.({
           content: [{ type: "text", text }],
           details: { mode: "single", results },
         });
       };
+      const progressText = (f: SubagentResult): string => {
+        const realElapsed = Math.round((Date.now() - (f.startTime ?? Date.now())) / 1000);
+        const budgetSec = f.budgetMs ? Math.round(f.budgetMs / 1000) : 0;
+        const graceMs = (f.graceMs ?? 0) + (f.pauseStart ? Date.now() - f.pauseStart : 0);
+        const graceSec = Math.round(graceMs / 1000);
+        const timeText =
+          budgetSec > 0
+            ? graceSec > 0
+              ? `${realElapsed}s/${budgetSec}s(+${graceSec}s)`
+              : `${realElapsed}s/${budgetSec}s`
+            : `${realElapsed}s`;
+        return `${params.role}  ${timeText}  ${f.usage.turns} turn${f.usage.turns !== 1 ? "s" : ""}`;
+      };
+
+      const unsubscribe = run.subscribe(() => {
+        if (run.result) return; // the terminal frame is emitted explicitly below
+        if (!onUpdate) return;
+        pendingFrame = run.snapshot;
+        if (throttleHandle !== undefined) return;
+        throttleHandle = setTimeout(() => {
+          throttleHandle = undefined;
+          const f = pendingFrame;
+          pendingFrame = undefined;
+          if (f) emit([f], progressText(f));
+        }, PROGRESS_THROTTLE_MS);
+      });
+
       // Emit a queued placeholder only when this call will actually wait.
-      if (onUpdate && gate.isAtCapacity) {
-        const queued: SubagentResult = {
-          role: params.role,
-          task: params.task,
-          exitCode: -1,
-          queued: true,
-          messages: [],
-          output: "",
-          stderr: "",
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            cost: 0,
-            contextTokens: 0,
-            turns: 0,
-          },
-          activityLog: [],
-          files: params.files,
-          context: params.context,
-        };
-        onUpdate({
-          content: [{ type: "text", text: `${params.role}: queued...` }],
-          details: { mode: "single", results: [queued] },
-        });
-      }
-
-      // Acquire a concurrency slot (abortable while queued)
-      try {
-        await gate.acquire(signal);
-      } catch {
-        throw new Error(`Subagent (${params.role}) was cancelled while queued.`);
+      if (onUpdate && concurrencyGate.isAtCapacity) {
+        emit([run.snapshot], `${params.role}: queued...`);
       }
 
       try {
-        // Resolve model AFTER acquiring so the queued period stays zero-cost
-        let rolesApi: ModelRolesAPI;
-        try {
-          rolesApi = getModelRolesAPI();
-        } catch {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "pi-model-roles is not initialized. Cannot resolve model for subagent.",
-              },
-            ],
-            details: undefined as any,
-          };
-        }
+        const result = await run.promise;
 
-        let modelRef: string;
-        let thinking: ThinkingLevel | undefined;
-        if (params.model) {
-          modelRef = params.model;
-        } else {
-          const resolved = await rolesApi.resolveRoleAsync(roleDef.role);
-          if (!resolved.model) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Role "${roleDef.role}" could not be resolved. Model not available.`,
-                },
-              ],
-              details: undefined as any,
-            };
-          }
-          modelRef = `${resolved.model.provider}/${resolved.model.id}`;
-          thinking = resolved.config.thinking;
-        }
-        const startTime = Date.now();
-        /** Snapshot of a failed first attempt; set before a fallback retry spawns so running TUI frames can show the trace. */
-        let activeFallbackFrom: FallbackFrom | undefined;
-        // Total active-time budget for this run (ms). The clock pauses while the
-        // child delegates, so this caps *active* time, not wall time.
-        const timeoutBudgetMs = effectiveTimeout(roleDef) * 1000;
-        const maxTurns = roleDef.maxTurns ?? config.maxTurns;
-        const maxCost = roleDef.maxCost ?? config.maxCost;
-
-        // Throttled progress: coalesces bursty thinking/tool events so the TUI
-        // repaints at most ~every PROGRESS_THROTTLE_MS, always keeping the latest state.
-        const renderProgress = (partial: Partial<SubagentResult>) => {
-          // Wall-clock elapsed (always ticking, even during delegate pauses).
-          const realElapsed = Math.round((Date.now() - startTime) / 1000);
-          const budgetSec = Math.round(timeoutBudgetMs / 1000);
-          const graceMs =
-            (partial.graceMs ?? 0) + (partial.pauseStart ? Date.now() - partial.pauseStart : 0);
-          const graceSec = Math.round(graceMs / 1000);
-          const timeText =
-            budgetSec > 0
-              ? graceSec > 0
-                ? `${realElapsed}s/${budgetSec}s(+${graceSec}s)`
-                : `${realElapsed}s/${budgetSec}s`
-              : `${realElapsed}s`;
-          const liveResult: SubagentResult = {
-            role: params.role,
-            task: params.task,
-            exitCode: -1,
-            messages: partial.messages ?? [],
-            output: partial.output ?? "",
-            stderr: "",
-            usage: partial.usage ?? {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-            model: partial.model,
-            stopReason: partial.stopReason,
-            activityLog: partial.activityLog ?? [],
-            startTime,
-            budgetMs: timeoutBudgetMs,
-            graceMs: partial.graceMs,
-            pauseStart: partial.pauseStart,
-            files: params.files,
-            context: params.context,
-            fallbackFrom: activeFallbackFrom,
-          };
-          const statusText = `${params.role}  ${timeText}  ${liveResult.usage.turns} turn${liveResult.usage.turns !== 1 ? "s" : ""}`;
-          onUpdate!({
-            content: [{ type: "text", text: statusText }],
-            details: { mode: "single", results: [liveResult] },
-          });
-        };
-        const emitProgress = (partial: Partial<SubagentResult>) => {
-          if (!onUpdate) return;
-          pendingPartial = partial;
-          if (throttleHandle !== undefined) return;
-          throttleHandle = setTimeout(() => {
-            throttleHandle = undefined;
-            const p = pendingPartial;
-            pendingPartial = undefined;
-            if (p) renderProgress(p);
-          }, PROGRESS_THROTTLE_MS);
-        };
-
-        // Emit running placeholder now that we hold a slot
-        if (onUpdate) {
-          const placeholder: SubagentResult = {
-            role: params.role,
-            task: params.task,
-            exitCode: -1,
-            messages: [],
-            output: "",
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-            activityLog: [],
-            startTime,
-            files: params.files,
-            context: params.context,
-          };
-          onUpdate({
-            content: [{ type: "text", text: `${params.role}: running...` }],
-            details: { mode: "single", results: [placeholder] },
-          });
-        }
-
-        let result = await spawnSubagent(modelRef, params.task, {
-          cwd: params.cwd ?? ctx.cwd,
-          thinking,
-          tools: roleDef.tools,
-          systemPrompt: roleDef.systemPrompt,
-          context: params.context,
-          contextFiles: params.files,
-          subagentRoles: roleDef.subagentRoles,
-          timeoutMs: timeoutBudgetMs,
-          maxTurns,
-          maxCost,
-          depth: CURRENT_DEPTH + 1,
-          signal,
-          onProgress: emitProgress,
-        });
-        // Keep the stored/displayed task as the user's original (not context-expanded)
-        result.task = params.task;
-
-        // Retry with fallback role on provider errors (quota, auth, timeout, etc.)
-        if (
-          (result.exitCode !== 0 || result.errorMessage) &&
-          roleDef.fallbackRole &&
-          isProviderError(result)
-        ) {
-          const fallback = await rolesApi.resolveRoleAsync(roleDef.fallbackRole);
-          if (fallback.model) {
-            const fbRef = `${fallback.model.provider}/${fallback.model.id}`;
-            // Snapshot the failed first attempt BEFORE the retry — spawn returns
-            // a fresh object, but building the snapshot up front also keeps it
-            // if the retry throws (abort). modelRef fills the model field when
-            // the child died before any message_end; activeFallbackFrom threads
-            // the trace into running TUI frames while the retry is in flight.
-            const fallbackFrom = buildFallbackFrom(result, modelRef);
-            activeFallbackFrom = fallbackFrom;
-            result = await spawnSubagent(fbRef, params.task, {
-              cwd: params.cwd ?? ctx.cwd,
-              thinking: fallback.config.thinking,
-              tools: roleDef.tools,
-              systemPrompt: roleDef.systemPrompt,
-              context: params.context,
-              contextFiles: params.files,
-              subagentRoles: roleDef.subagentRoles,
-              timeoutMs: timeoutBudgetMs,
-              maxTurns,
-              maxCost,
-              depth: CURRENT_DEPTH + 1,
-              signal,
-              onProgress: emitProgress,
-            });
-            result.task = params.task;
-            result.fallbackFrom = fallbackFrom;
-          }
-        }
-
-        // Stamp terminal fields once, after any fallback retry: elapsedMs covers
-        // the whole delegate span (incl. retry); files/context mirror params for the TUI.
-        result.files = params.files;
-        result.context = params.context;
-        result.elapsedMs = Date.now() - startTime;
-
-        // Compress/truncate oversized output before it reaches the main model or TUI.
-        // Keep the raw original for the history file (audit), feed the prepared text to LLM + expanded view.
-        const rawOutput = result.output;
-        if (result.output.length > MAX_OUTPUT_CHARS) {
-          const { text, method } = await compressOutput(
-            rolesApi,
-            result.output,
-            params.task,
-            config.summary,
-          );
-          result.output = text;
-          result.outputMethod = method;
-        } else {
-          result.outputMethod = "raw";
-        }
-
-        // Generate summary for TUI display
-        if (config.summary.enabled && result.output.trim()) {
-          result.summary = await generateSummary(rolesApi, result.output, config.summary);
-        }
-
-        // Persist audit record (best-effort; covers both success and failure).
-        // History keeps the raw original output even when LLM/TUI saw a compressed/truncated version.
-        if (config.history.enabled) {
-          let sessionId: string | undefined;
-          try {
-            sessionId = ctx.sessionManager?.getSessionId();
-          } catch {
-            /* ignore */
-          }
-          persistSubagentHistory(
-            sessionId,
-            _toolCallId,
-            params.role,
-            params.task,
-            result,
-            rawOutput,
-          );
+        // Pipeline throws (abort, spawn crash) surface as tool errors — parity
+        // with the pre-engine catch path, including the empty-results final frame.
+        if (run.thrown) {
+          const errorText = `Subagent (${params.role}) error: ${run.thrown.message || run.thrown}`;
+          emit([], errorText);
+          throw new Error(errorText);
         }
 
         // Fallback note: the main model must know the answer came from the
         // fallback model, not the role's primary — on success AND failure.
-        const fallbackNote = result.fallbackFrom
-          ? `\n\n--- fallback: ${formatFallback(result.fallbackFrom)}; retried on ${result.model ?? "fallback role"} ---`
-          : "";
+        const fallbackNote = formatFallbackNote(result);
 
         if (result.exitCode !== 0 || result.errorMessage) {
           const failedText =
             `Subagent (${params.role}) failed: ${result.errorMessage || result.stderr || "unknown error"}\n\nPartial output:\n${result.output}` +
             fallbackNote;
-          emitFinal([result], failedText);
+          emit([result], failedText);
           return {
             content: [{ type: "text", text: failedText }],
             details: { mode: "single", results: [result] },
           };
         }
 
-        // Build concise output for the main model with usage info
-        const usageParts: string[] = [];
-        if (result.usage.turns)
-          usageParts.push(`${result.usage.turns} turn${result.usage.turns > 1 ? "s" : ""}`);
-        if (result.usage.input) usageParts.push(`\u2191${formatTokens(result.usage.input)}`);
-        if (result.usage.output) usageParts.push(`\u2193${formatTokens(result.usage.output)}`);
-        if (result.usage.cost) usageParts.push(`$${result.usage.cost.toFixed(4)}`);
-        if (result.model) usageParts.push(result.model);
-        const usageLine = usageParts.length > 0 ? `\n\n--- ${usageParts.join(" ")} ---` : "";
-
-        const finalText = result.output + fallbackNote + usageLine;
-        emitFinal([result], finalText);
+        const finalText = result.output + fallbackNote + formatUsageFooter(result);
+        emit([result], finalText);
         return {
           content: [{ type: "text", text: finalText }],
           details: { mode: "single", results: [result] },
         };
-      } catch (err: any) {
-        const errorText = `Subagent (${params.role}) error: ${err.message || err}`;
-        emitFinal([], errorText);
-        throw new Error(errorText);
       } finally {
-        // Cancel any trailing throttled onUpdate regardless of how we exited
-        // (success / fallback / budget / error). A stale "still running" progress
-        // event fired after the tool returns corrupts framework tool state and
-        // crashes the TUI — notably in delegate chains where a subagent itself
-        // delegates (worker → explorer): the inner crash surfaces as TUI escapes.
+        // Cancel any trailing throttled onUpdate regardless of how we exited.
+        // A stale "still running" progress event fired after the tool returns
+        // corrupts framework tool state and crashes the TUI.
         if (throttleHandle !== undefined) clearTimeout(throttleHandle);
-        pendingPartial = undefined;
-        gate.release();
+        unsubscribe();
       }
     },
 
-    // TUI rendering lives in ./render.ts — call row and result view.
-    renderCall: renderDelegateCall,
-    renderResult: renderDelegateResult,
+    // TUI rendering lives in ./render.ts (foreground) and ./render-async.ts
+    // (background input block) — call row and result view.
+    renderCall(args, theme, context) {
+      return (args as any).background
+        ? renderBackgroundDelegateCall(args, theme, context)
+        : renderDelegateCall(args, theme, context);
+    },
+    renderResult(result, options, theme, context) {
+      // The background flag is not part of the result — route on details shape:
+      // background results carry BackgroundDelegateDetails (id), foreground ones
+      // carry SubagentDetails (mode/results, never an id field).
+      const details = result.details as { id?: unknown } | undefined;
+      return typeof details?.id === "string"
+        ? renderBackgroundDelegateResult(result, options, theme, context)
+        : renderDelegateResult(result, options, theme, context);
+    },
   });
+
+  pi.registerTool({
+    name: "subagent_wait",
+    label: "Wait for background subagents",
+    description:
+      "Block until one or more background subagents (started via subagent_delegate with background: true) finish. Omit ids to wait for ALL current background runs. Returns each run's final status ONLY (succeeded/failed) — fetch the actual results afterwards with subagent_check. If timeout_ms elapses before every run finishes, returns an error listing per-run statuses. Cancelling the wait never cancels the runs.",
+    promptSnippet: "Wait for background subagents to finish",
+    parameters: Type.Object({
+      ids: Type.Optional(
+        Type.Array(Type.String(), {
+          minItems: 1,
+          description:
+            "Run ids returned by background delegate calls. Omit to wait for all current background runs.",
+        }),
+      ),
+      timeout_ms: Type.Optional(
+        Type.Number({
+          description:
+            "Max time to wait in milliseconds. Omit to wait until all runs finish (each run still has its own role timeout).",
+        }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+      const ids = params.ids ? [...new Set(params.ids)] : [...backgroundRuns.keys()];
+      if (ids.length === 0) {
+        throw new Error(
+          "No background runs to wait for — start one with subagent_delegate(background: true) first.",
+        );
+      }
+      const unknown = ids.filter((id) => !backgroundRuns.has(id));
+      if (unknown.length > 0) {
+        const known = [...backgroundRuns.keys()];
+        throw new Error(
+          `Unknown subagent id(s): ${unknown.join(", ")}. Known: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+        );
+      }
+      const runs = ids.map((id) => backgroundRuns.get(id)!);
+      const timeoutMs =
+        typeof params.timeout_ms === "number" && params.timeout_ms > 0 ? params.timeout_ms : 0;
+
+      // ── Live mirror: forward combined snapshots into this tool row ──
+      let pending = false;
+      let throttleHandle: ReturnType<typeof setTimeout> | undefined;
+      const entries = () => runs.map((r) => ({ id: r.id, role: r.role, result: r.snapshot }));
+      const emit = () => {
+        const counts = { queued: 0, running: 0, succeeded: 0, failed: 0 };
+        for (const r of runs) counts[r.state]++;
+        const parts: string[] = [];
+        if (counts.running) parts.push(`${counts.running} running`);
+        if (counts.queued) parts.push(`${counts.queued} queued`);
+        parts.push(`${counts.succeeded} succeeded`);
+        parts.push(`${counts.failed} failed`);
+        onUpdate?.({
+          content: [{ type: "text", text: `waiting: ${parts.join(", ")}` }],
+          details: { entries: entries() },
+        });
+      };
+      const onNotify = () => {
+        if (!onUpdate) return;
+        pending = true;
+        if (throttleHandle !== undefined) return;
+        throttleHandle = setTimeout(() => {
+          throttleHandle = undefined;
+          if (pending) {
+            pending = false;
+            emit();
+          }
+        }, PROGRESS_THROTTLE_MS);
+      };
+      const unsubscribers = runs.map((r) => r.subscribe(onNotify));
+      // First frame right away so the row shows entries immediately.
+      if (onUpdate) emit();
+
+      let timedOut = false;
+      let cancelled = false;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          Promise.all(runs.map((r) => r.promise)).then(() => resolve());
+          if (timeoutMs > 0) {
+            timeoutHandle = setTimeout(() => {
+              timedOut = true;
+              reject(new Error("timeout"));
+            }, timeoutMs);
+          }
+          if (signal) {
+            onAbort = () => {
+              cancelled = true;
+              reject(new Error("cancelled"));
+            };
+            if (signal.aborted) {
+              onAbort();
+              return;
+            }
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
+        });
+      } catch (err) {
+        if (timedOut || cancelled) {
+          // handled below / rethrown with context
+          if (cancelled) {
+            throw new Error(
+              "wait was cancelled — the watched subagents keep running. Call wait or check again later.",
+            );
+          }
+        } else {
+          throw err;
+        }
+      } finally {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        if (onAbort && signal) signal.removeEventListener("abort", onAbort);
+        if (throttleHandle !== undefined) clearTimeout(throttleHandle);
+        for (const u of unsubscribers) u();
+      }
+
+      const perId = () => runs.map((r) => `${r.id}: ${r.state}`).join("\n");
+      if (timedOut) {
+        const unfinished = runs.filter((r) => r.state === "queued" || r.state === "running");
+        const text =
+          `Timed out after ${Math.round(timeoutMs / 1000)}s — ${unfinished.length} of ${runs.length} subagents not finished. ` +
+          `Call wait again later, or check ids individually.\n${perId()}`;
+        return {
+          content: [{ type: "text", text }],
+          details: { entries: entries(), timedOut: true },
+        };
+      }
+      return {
+        content: [{ type: "text", text: perId() }],
+        details: { entries: entries() },
+      };
+    },
+
+    renderCall: renderWaitCall,
+    renderResult: renderWaitResult,
+  });
+
+  pi.registerTool({
+    name: "subagent_check",
+    label: "Check a background subagent",
+    description:
+      "Get an instant snapshot of ONE background subagent run: queued / running (with current activity) / finished (with the full output as the run result) / failed (with reason and partial output). Does not wait — use subagent_wait for that. One id per call because results can be large.",
+    promptSnippet: "Inspect a background subagent run",
+    parameters: Type.Object({
+      id: Type.String({ description: "Run id returned by a background delegate call" }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const run = backgroundRuns.get(params.id);
+      if (!run) {
+        const known = [...backgroundRuns.keys()];
+        throw new Error(
+          `Unknown subagent id: ${params.id}. Known: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+        );
+      }
+
+      // Freeze live frames so the snapshot's elapsed time stays static.
+      const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
+      return {
+        content: [{ type: "text", text: formatCheckText(run.id, run.role, snap) }],
+        details: { id: run.id, role: run.role, result: snap },
+      };
+    },
+
+    renderCall: renderCheckCall,
+    renderResult: renderCheckResult,
+  });
+
   pi.registerCommand("subagent:doctor", {
     description: "Diagnose pi-subagent configuration and dependencies",
     handler: async (_args, ctx) => {
@@ -653,7 +666,17 @@ export default function subagentExtension(pi: ExtensionAPI) {
         allOk = false;
       }
 
-      // 5. runtime context
+      // 5. background registry
+      if (backgroundRuns.size > 0) {
+        lines.push("[i] background runs:");
+        for (const [id, run] of backgroundRuns) {
+          lines.push(`    ${id} ${run.role}: ${run.state}`);
+        }
+      } else {
+        lines.push("[i] background runs: (none)");
+      }
+
+      // 6. runtime context
       const allowed = process.env.PI_SUBAGENT_ALLOWED;
       if (allowed) lines.push(`[i] PI_SUBAGENT_ALLOWED: ${allowed}`);
       lines.push(

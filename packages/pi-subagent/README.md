@@ -2,7 +2,7 @@
 
 Role-based subagent orchestration for [pi](https://github.com/earendil-works/pi).
 
-Provides a `delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries.
+Provides a `subagent_delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries. Runs can be foreground (blocking) or background (asynchronous, collected later via `subagent_wait`/`subagent_check`).
 
 ## Design Philosophy
 
@@ -14,14 +14,14 @@ This means:
 - **Subagents don't plan** — the main model decides what needs to be done and provides a clear task description
 - **Subagents don't orchestrate** — if a task requires multiple steps, the main model examines each result and decides the next move
 - **Subagents don't inherit history** — they don't need the full conversation; just a precise task description
-- **Multiple subagents can run in parallel** — emit multiple `delegate` calls in one turn; pi executes them concurrently
+- **Multiple subagents can run in parallel** — emit multiple `subagent_delegate` calls in one turn; pi executes them concurrently
 - **Subagents can nest subagents** — a `worker` can delegate exploration to `explorer` without returning to the main model
 
 > This design currently focuses on single-task delegation rather than chain pipelines or context-forking — those patterns fit better when subagents act as advisors (planner, oracle) rather than executors.
 
 ## How it works
 
-1. Main model calls the `delegate` tool with a role and task description
+1. Main model calls the `subagent_delegate` tool with a role and task description
 2. The extension resolves the role to a model via pi-model-roles
 3. Spawns an isolated pi child process with the configured model, tools, and system prompt
 4. **Real-time TUI progress** shows tool calls, turns, and elapsed time as the subagent runs
@@ -39,7 +39,7 @@ This means:
 
 **Nested delegation**: `worker` and `researcher` can spawn their own subagents. This keeps the main model's context clean — a worker can explore unfamiliar code via an `explorer` subagent without returning intermediate results to the main model.
 
-**Parallel execution**: To run multiple subagents concurrently, emit multiple `delegate` calls in a single turn. Pi's framework executes them in parallel automatically, with each subagent getting its own TUI progress display.
+**Parallel execution**: To run multiple subagents concurrently, emit multiple `subagent_delegate` calls in a single turn. Pi's framework executes them in parallel automatically, with each subagent getting its own TUI progress display.
 
 ## TUI Display
 
@@ -52,7 +52,7 @@ This means:
 
 | Command | Description |
 |---------|-------------|
-| `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, and role references |
+| `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, role references, and list background runs |
 
 ## Dependencies
 
@@ -100,7 +100,7 @@ Edit `~/.pi/agent/settings.json`:
 
 All fields are optional. Defaults: `maxConcurrency: 4`, `maxDepth: 3`, `maxTurns: 0` (unlimited), `maxCost: 0` (unlimited), `history.enabled: true`, `summary.role: "utility"`, `summary.enabled: true`.
 
-Timeouts are defined per role. Built-in defaults are `explorer: 900`, `reviewer: 3600`, `worker: 2400`, and `researcher: 2400` seconds. The timeout is active time — the clock pauses while the child is inside a nested `delegate` call, so delegate-capable roles need no extra headroom.
+Timeouts are defined per role. Built-in defaults are `explorer: 900`, `reviewer: 3600`, `worker: 2400`, and `researcher: 2400` seconds. The timeout is active time — the clock pauses while the child is inside a nested `subagent_delegate` call, so delegate-capable roles need no extra headroom.
 
 All numeric limits accept `0` for unlimited: `maxConcurrency`, `maxDepth`, `maxTurns`, `maxCost`, and per-role `timeout`. Negative values are normalized to `0`; non-numeric or non-finite values fall back to their defaults. `maxConcurrency: 0` runs delegates without queuing, and `maxDepth: 0` permits unrestricted nesting.
 
@@ -163,7 +163,7 @@ Delegate tasks that would generate many tool calls or verbose output to keep you
 | `worker` | `"Rename all snake_case fields to camelCase in src/models/"` | Your context stays focused on high-level intent |
 | `researcher` | `"Find the React 19 migration guide and summarize breaking changes"` | Search results are noisy; get a clean summary |
 
-**Parallel usage:** emit multiple `delegate` calls in a single turn:
+**Parallel usage:** emit multiple `subagent_delegate` calls in a single turn:
 
 ```json
 [
@@ -171,6 +171,49 @@ Delegate tasks that would generate many tool calls or verbose output to keep you
   { "role": "researcher", "task": "Find latest docs on the library used here" }
 ]
 ```
+
+## Background Delegation
+
+Foreground and background delegation share one async run engine — foreground is simply background-but-blocking. With `background: true`, `subagent_delegate` returns immediately with a run id, and two companion tools collect the outcome:
+
+| Tool | Purpose | Returns to the model |
+|------|---------|---------------------|
+| `subagent_delegate(background: true)` | Start an async run | Just the id (`sub-N`) |
+| `subagent_wait(ids?, timeout_ms?)` | Block until **all** listed runs finish (omit `ids` for all current background runs) | Statuses only (`sub-1: succeeded`) — never results; errors when the timeout hits with runs unfinished |
+| `subagent_check(id)` | One-shot snapshot of a single run | `queued` / `running` + current activity / the **full output** once finished / failure reason + partial output |
+
+Typical flow:
+
+```json
+[
+  { "role": "worker", "task": "Implement the export module", "background": true },
+  { "role": "researcher", "task": "Find the CSV escaping spec", "background": true }
+]
+```
+
+…continue other work, then:
+
+```json
+{ "ids": ["sub-1", "sub-2"] }
+```
+
+(call `subagent_wait`), and finally `subagent_check` each succeeded id to fetch its result. `subagent_check` accepts one id per call because results can be large.
+
+Semantics worth knowing:
+
+- **Background runs survive turn cancellation** and are unaffected by a cancelled `subagent_wait` — cancelling the wait never cancels the runs; call `subagent_wait` or `subagent_check` again later.
+- **`timeout_ms` is optional.** Without it, `subagent_wait` blocks until every run finishes; each run is still bounded by its own role timeout.
+- Background runs share the global `maxConcurrency` gate — extra runs show up as `queued` in wait/check views.
+- **Top-level only:** nested subagents cannot delegate in the background (a subagent process exits when its task finishes, which would orphan the run).
+- The run registry lives in the pi process: a `/reload` or restart orphans in-flight background runs (their ids stop resolving).
+
+### Background TUI display
+
+Each tool row renders one aspect of the same decomposition the foreground row shows all at once (input · process · result · usage):
+
+- **Background subagent_delegate row = input only.** Collapsed: `▶ sub-1 <task first line>`. Expanded: plus `@file` references, context size, and the full task text. Static — the run progresses invisibly until a subagent_wait/subagent_check row picks it up.
+- **subagent_wait row = process + usage.** One block per watched run: status line (`⏸ queued / ⏳ running` + id + task preview; bare, icon-free once terminal), a live activity stream (collapsed keeps the latest 5 items with a leading ellipsis; expanded shows everything) and a ticking usage bar. Once a run finishes, its process stream is replaced by a **status-only** result line (`✓ finished`, or `✗ <reason>`) — the output itself never appears in a subagent_wait row; expanded keeps the full process stream instead. A timed-out wait freezes the view.
+- **subagent_check row = the result view.** Same block shape as subagent_wait's single-run view (no id — there is only one), but the result line shows `✓ <AI summary>` and the expanded view renders the **full output** — subagent_check is where the conclusion lives.
 
 ### Passing context and reference files
 

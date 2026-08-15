@@ -7,14 +7,25 @@ import * as os from "node:os";
 import type {
   ActivityEntry,
   FallbackFrom,
+  RunState,
   SubagentDetails,
   SubagentRole,
   SubagentResult,
+  SubagentUsage,
   ToolStatus,
+  WaitDetails,
 } from "./types.ts";
 
 /** Max output chars fed to the main model and the expanded TUI. Larger outputs are compressed (or truncated) to fit. */
 export const MAX_OUTPUT_CHARS = 50_000;
+
+/** Coalesce bursty progress events so the TUI repaints at most this often. */
+export const PROGRESS_THROTTLE_MS = 50;
+
+/** A zeroed usage block — frames and synthesized failures start from this. */
+export function emptyUsage(): SubagentUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+}
 
 export function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -85,8 +96,9 @@ export function formatToolCall(
   fg: (color: string, text: string) => string,
 ): string {
   switch (toolName) {
-    case "delegate": {
+    case "subagent_delegate": {
       const subRole = args.role as string | undefined;
+      // Compact display label — the full tool name is subagent_delegate.
       return fg("muted", "delegate ") + fg("accent", subRole ?? "...");
     }
     case "bash": {
@@ -192,7 +204,7 @@ export function renderDisplayItems(
   return text.trimEnd();
 }
 
-export function isFailedResult(r: SubagentResult): boolean {
+export function isFailedResult(r: { exitCode: number; stopReason?: string }): boolean {
   return (
     r.exitCode !== 0 ||
     r.stopReason === "error" ||
@@ -267,6 +279,68 @@ export function formatFallback(f: FallbackFrom): string {
   const firstLine = reason.split("\n")[0];
   const short = firstLine.length > 100 ? `${firstLine.slice(0, 100)}...` : firstLine;
   return `first attempt ${f.model ?? "unknown model"} failed (${short})`;
+}
+
+// ── Background runs (delegate background:true / wait / check) ────────────
+
+/** Derive the lifecycle state of a run from one of its frames (live or terminal). */
+export function deriveRunState(r: { exitCode: number; queued?: boolean; stopReason?: string }): RunState {
+  if (r.exitCode === -1) return r.queued ? "queued" : "running";
+  return isFailedResult(r) ? "failed" : "succeeded";
+}
+
+/** True when wait tool result details carries the timeout flag. */
+export function isWaitTimedOut(details: unknown): boolean {
+  return (details as WaitDetails | undefined)?.timedOut === true;
+}
+
+/** Human-readable description of what a running subagent is doing right now (latest activity item). */
+export function describeCurrentActivity(r: { activityLog: ActivityEntry[] }): string {
+  const last = r.activityLog[r.activityLog.length - 1];
+  if (!last) return "waiting for first event";
+  if (last.kind === "thinking") return last.status === "running" ? "thinking" : "thought";
+  return formatToolCall(last.toolName ?? "?", last.args ?? {}, (_color, text) => text);
+}
+
+/** Footer appended to terminal results for the main model: `\n\n--- 3 turns ↑12k ↓1k $0.01 model ---` (empty when nothing to show). */
+export function formatUsageFooter(r: { usage: SubagentUsage; model?: string }): string {
+  const parts: string[] = [];
+  if (r.usage.turns) parts.push(`${r.usage.turns} turn${r.usage.turns > 1 ? "s" : ""}`);
+  if (r.usage.input) parts.push(`\u2191${formatTokens(r.usage.input)}`);
+  if (r.usage.output) parts.push(`\u2193${formatTokens(r.usage.output)}`);
+  if (r.usage.cost) parts.push(`$${r.usage.cost.toFixed(4)}`);
+  if (r.model) parts.push(r.model);
+  return parts.length > 0 ? `\n\n--- ${parts.join(" ")} ---` : "";
+}
+
+/** Fallback provenance note appended to terminal results (empty when no retry happened). */
+export function formatFallbackNote(r: { fallbackFrom?: FallbackFrom; model?: string }): string {
+  return r.fallbackFrom
+    ? `\n\n--- fallback: ${formatFallback(r.fallbackFrom)}; retried on ${r.model ?? "fallback role"} ---`
+    : "";
+}
+
+/** LLM-facing text returned by the check tool for one run snapshot. */
+export function formatCheckText(id: string, role: string, r: SubagentResult): string {
+  const state = deriveRunState(r);
+  const head = `${id} (${role})`;
+  if (state === "queued") return `${head}: queued — waiting for a concurrency slot.`;
+  if (state === "running") return `${head}: running — ${describeCurrentActivity(r)}`;
+  if (state === "failed") {
+    return `${head}: failed — ${r.errorMessage || r.stderr || "unknown error"}\n\nPartial output:\n${r.output}`;
+  }
+  return `${head}: finished\n\n${r.output}${formatFallbackNote(r)}${formatUsageFooter(r)}`;
+}
+
+/** Freeze a live frame into a static snapshot: stop the elapsed clock and fold the open pause into grace. */
+export function freezeFrame(r: SubagentResult): SubagentResult {
+  return {
+    ...r,
+    startTime: undefined,
+    elapsedMs: r.startTime ? Date.now() - r.startTime : r.elapsedMs,
+    graceMs: (r.graceMs ?? 0) + (r.pauseStart ? Date.now() - r.pauseStart : 0),
+    pauseStart: undefined,
+  };
 }
 
 /**

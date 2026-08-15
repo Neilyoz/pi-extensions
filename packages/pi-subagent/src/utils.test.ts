@@ -25,6 +25,13 @@ import {
   buildFallbackFrom,
   formatFallback,
   FALLBACK_STDERR_TAIL,
+  deriveRunState,
+  isWaitTimedOut,
+  describeCurrentActivity,
+  formatUsageFooter,
+  formatFallbackNote,
+  formatCheckText,
+  freezeFrame,
 } from "./utils.ts";
 import type { SubagentResult, SubagentRole } from "./types.ts";
 
@@ -279,10 +286,10 @@ describe("effectiveTimeout", () => {
     assert.equal(effectiveTimeout(role(["read", "grep"])), 0);
   });
   test("delegate-capable role without timeout is also unlimited", () => {
-    assert.equal(effectiveTimeout(role(["read", "delegate"])), 0);
+    assert.equal(effectiveTimeout(role(["read", "subagent_delegate"])), 0);
   });
   test("explicit role timeout is honored", () => {
-    assert.equal(effectiveTimeout(role(["read", "delegate"], 300)), 300);
+    assert.equal(effectiveTimeout(role(["read", "subagent_delegate"], 300)), 300);
   });
   test("negative and non-finite values normalize to unlimited", () => {
     assert.equal(effectiveTimeout(role(["read"], -1)), 0);
@@ -428,5 +435,86 @@ describe("fallback observability", () => {
     const out = formatFallback(f);
     assert.ok(out.includes("Timed out after 900s"));
     assert.ok(!out.includes("CONNECTIVITY"));
+  });
+});
+
+describe("background run helpers", () => {
+  const queuedFrame = () => baseResult({ exitCode: -1, queued: true });
+  const runningFrame = () => baseResult({ exitCode: -1 });
+
+  test("deriveRunState maps frames to lifecycle states", () => {
+    assert.equal(deriveRunState(queuedFrame()), "queued");
+    assert.equal(deriveRunState(runningFrame()), "running");
+    assert.equal(deriveRunState(baseResult()), "succeeded");
+    assert.equal(deriveRunState(baseResult({ exitCode: 1 })), "failed");
+    assert.equal(deriveRunState(baseResult({ stopReason: "timeout", exitCode: 124 })), "failed");
+    // budget stops are intentional successes
+    assert.equal(deriveRunState(baseResult({ stopReason: "budget_exceeded" })), "succeeded");
+  });
+
+  test("isWaitTimedOut only matches the explicit timeout flag", () => {
+    assert.equal(isWaitTimedOut({ entries: [], timedOut: true }), true);
+    assert.equal(isWaitTimedOut({ entries: [] }), false);
+    assert.equal(isWaitTimedOut(undefined), false);
+  });
+
+  test("describeCurrentActivity reports the latest activity item", () => {
+    assert.equal(describeCurrentActivity(runningFrame()), "waiting for first event");
+    const thinking = runningFrame();
+    thinking.activityLog = [{ kind: "thinking", id: "thinking-0", status: "running" }];
+    assert.equal(describeCurrentActivity(thinking), "thinking");
+    const withTool = runningFrame();
+    withTool.activityLog = [
+      { kind: "thinking", id: "thinking-0", status: "done" },
+      { kind: "toolCall", id: "t1", status: "running", toolName: "bash", args: { command: "ls" } },
+    ];
+    assert.equal(describeCurrentActivity(withTool), "$ ls");
+  });
+
+  test("formatUsageFooter renders turns, tokens, cost, and model", () => {
+    assert.equal(formatUsageFooter(baseResult()), "");
+    const r = baseResult({
+      usage: { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0, cost: 0.5, contextTokens: 0, turns: 2 },
+      model: "test/model-x",
+    });
+    assert.equal(formatUsageFooter(r), "\n\n--- 2 turns \u21911.2k \u2193300 $0.5000 test/model-x ---");
+  });
+
+  test("formatFallbackNote is empty without a retry and descriptive with one", () => {
+    assert.equal(formatFallbackNote(baseResult()), "");
+    const r = baseResult({
+      fallbackFrom: { model: "primary/m1", errorMessage: "429 quota exceeded" },
+      model: "fallback/m2",
+    });
+    assert.equal(
+      formatFallbackNote(r),
+      "\n\n--- fallback: first attempt primary/m1 failed (429 quota exceeded); retried on fallback/m2 ---",
+    );
+  });
+
+  test("formatCheckText covers all four run states", () => {
+    assert.match(formatCheckText("sub-1", "explorer", queuedFrame()), /^sub-1 \(explorer\): queued —/);
+    assert.match(formatCheckText("sub-1", "explorer", runningFrame()), /^sub-1 \(explorer\): running — /);
+    assert.match(
+      formatCheckText("sub-1", "explorer", baseResult({ exitCode: 1, errorMessage: "boom" })),
+      /^sub-1 \(explorer\): failed — boom\n\nPartial output:\nok$/,
+    );
+    assert.match(formatCheckText("sub-1", "explorer", baseResult()), /^sub-1 \(explorer\): finished\n\nok$/);
+  });
+
+  test("freezeFrame stops the elapsed clock and folds the open pause into grace", () => {
+    const start = Date.now() - 5000;
+    const pausedAt = Date.now() - 2000;
+    const frozen = freezeFrame(baseResult({
+      exitCode: -1,
+      startTime: start,
+      budgetMs: 60000,
+      graceMs: 1000,
+      pauseStart: pausedAt,
+    }));
+    assert.equal(frozen.startTime, undefined);
+    assert.equal(frozen.pauseStart, undefined);
+    assert.ok(frozen.elapsedMs! >= 4990 && frozen.elapsedMs! <= 5010, `elapsedMs ~5000, got ${frozen.elapsedMs}`);
+    assert.ok(frozen.graceMs! >= 3000 && frozen.graceMs! <= 3010, `graceMs ~3000, got ${frozen.graceMs}`);
   });
 });

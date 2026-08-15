@@ -15,7 +15,7 @@ A collection of small extensions for [Pi Coding Agent](https://pi.dev).
 | [`pi-usage-block`](./packages/pi-usage-block) | Usage quota status block for powerline and pi-editor-shell |
 | [`pi-editor-shell`](./packages/pi-editor-shell) | Unified rounded-corner editor shell — embeds model, context, cache, git, and pinned extension status info in the editor border |
 | [`pi-scout`](./packages/pi-scout) <sup>†</sup> | Per-turn side agent — lazy skill injection, automatic model routing, and trivial-ack short-circuit (skips the side model on `好的`/`ok`/`はい`) |
-| [`pi-subagent`](./packages/pi-subagent) <sup>†</sup> | Role-based subagent orchestration — delegates tasks to specialized pi child processes with real-time TUI progress |
+| [`pi-subagent`](./packages/pi-subagent) <sup>†</sup> | Role-based subagent orchestration — foreground and background (async, `subagent_wait`/`subagent_check`) delegation to specialized pi child processes with real-time TUI progress |
 | [`pi-model-roles`](./packages/pi-model-roles) | Named model role definitions with resolution to Model instances |
 | [`pi-command-palette`](./packages/pi-command-palette) | Global command palette — Ctrl+Shift+P to search and run commands from anywhere |
 | [`pi-session-namer`](./packages/pi-session-namer) <sup>†</sup> | Auto-name sessions using a cheap side agent |

@@ -71,7 +71,7 @@ function clearElapsedTimer(context: { state: Record<string, unknown> }): void {
 
 export const renderDelegateCall: RenderCallFn = (args, theme, _context) => {
   const roleName = (args as any).role || "...";
-  const text = theme.fg("toolTitle", theme.bold("delegate ")) + theme.fg("accent", roleName);
+  const text = theme.fg("toolTitle", theme.bold("subagent_delegate ")) + theme.fg("accent", roleName);
   return new Text(text, 0, 0);
 };
 
