@@ -2,3 +2,4 @@ node_modules/
 .codegraph/
 debug.log
 .DS_Store
+.zcode/
