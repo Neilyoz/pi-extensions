@@ -12,7 +12,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ModelRolesAPI, ThinkingLevel } from "@d3ara1n/pi-model-roles";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
-import type { SubagentConfig, SubagentResult, SubagentRole } from "./types.ts";
+import type { FallbackFrom, SubagentConfig, SubagentResult, SubagentRole } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { loadSubagentConfig } from "./config.ts";
 import { BUILTIN_ROLES } from "./roles.ts";
@@ -23,6 +23,8 @@ import {
   AsyncSemaphore,
   isProviderError,
   effectiveTimeout,
+  buildFallbackFrom,
+  formatFallback,
   hasFailedSubagentResult,
 } from "./utils.ts";
 import { persistSubagentHistory } from "./history.ts";
@@ -325,6 +327,8 @@ export default function subagentExtension(pi: ExtensionAPI) {
           thinking = resolved.config.thinking;
         }
         const startTime = Date.now();
+        /** Snapshot of a failed first attempt; set before a fallback retry spawns so running TUI frames can show the trace. */
+        let activeFallbackFrom: FallbackFrom | undefined;
         // Total active-time budget for this run (ms). The clock pauses while the
         // child delegates, so this caps *active* time, not wall time.
         const timeoutBudgetMs = effectiveTimeout(roleDef) * 1000;
@@ -371,6 +375,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
             pauseStart: partial.pauseStart,
             files: params.files,
             context: params.context,
+            fallbackFrom: activeFallbackFrom,
           };
           const statusText = `${params.role}  ${timeText}  ${liveResult.usage.turns} turn${liveResult.usage.turns !== 1 ? "s" : ""}`;
           onUpdate!({
@@ -446,6 +451,13 @@ export default function subagentExtension(pi: ExtensionAPI) {
           const fallback = await rolesApi.resolveRoleAsync(roleDef.fallbackRole);
           if (fallback.model) {
             const fbRef = `${fallback.model.provider}/${fallback.model.id}`;
+            // Snapshot the failed first attempt BEFORE the retry — spawn returns
+            // a fresh object, but building the snapshot up front also keeps it
+            // if the retry throws (abort). modelRef fills the model field when
+            // the child died before any message_end; activeFallbackFrom threads
+            // the trace into running TUI frames while the retry is in flight.
+            const fallbackFrom = buildFallbackFrom(result, modelRef);
+            activeFallbackFrom = fallbackFrom;
             result = await spawnSubagent(fbRef, params.task, {
               cwd: params.cwd ?? ctx.cwd,
               thinking: fallback.config.thinking,
@@ -462,6 +474,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
               onProgress: emitProgress,
             });
             result.task = params.task;
+            result.fallbackFrom = fallbackFrom;
           }
         }
 
@@ -511,8 +524,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
           );
         }
 
+        // Fallback note: the main model must know the answer came from the
+        // fallback model, not the role's primary — on success AND failure.
+        const fallbackNote = result.fallbackFrom
+          ? `\n\n--- fallback: ${formatFallback(result.fallbackFrom)}; retried on ${result.model ?? "fallback role"} ---`
+          : "";
+
         if (result.exitCode !== 0 || result.errorMessage) {
-          const failedText = `Subagent (${params.role}) failed: ${result.errorMessage || result.stderr || "unknown error"}\n\nPartial output:\n${result.output}`;
+          const failedText =
+            `Subagent (${params.role}) failed: ${result.errorMessage || result.stderr || "unknown error"}\n\nPartial output:\n${result.output}` +
+            fallbackNote;
           emitFinal([result], failedText);
           return {
             content: [{ type: "text", text: failedText }],
@@ -530,7 +551,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
         if (result.model) usageParts.push(result.model);
         const usageLine = usageParts.length > 0 ? `\n\n--- ${usageParts.join(" ")} ---` : "";
 
-        const finalText = result.output + usageLine;
+        const finalText = result.output + fallbackNote + usageLine;
         emitFinal([result], finalText);
         return {
           content: [{ type: "text", text: finalText }],

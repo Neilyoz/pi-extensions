@@ -17,6 +17,7 @@ type RenderCallFn = NonNullable<ToolDefinition["renderCall"]>;
 type RenderResultFn = NonNullable<ToolDefinition["renderResult"]>;
 import {
   buildDisplayItems,
+  formatFallback,
   formatUsageStats,
   elapsedSeconds,
   formatToolCall,
@@ -170,6 +171,13 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
     }
   }
 
+  // Fallback trace: the role's primary model hit a provider error and the run is
+  // being / was retried on the fallback role — warn, don't error (the retry may
+  // still succeed). Also shown while the retry is running.
+  const fallbackLine = r.fallbackFrom
+    ? theme.fg("warning", `\u26a0 fallback: ${formatFallback(r.fallbackFrom)}`)
+    : undefined;
+
   if (expanded) {
     const container = new Container();
 
@@ -177,6 +185,9 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
     container.addChild(new Text(taskline, 0, 0));
     if (resultline) {
       container.addChild(new Text(resultline, 0, 0));
+    }
+    if (fallbackLine) {
+      container.addChild(new Text(fallbackLine, 0, 0));
     }
 
     // Input block: reference files + context char count + task full text,
@@ -272,6 +283,7 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
       if (rendered) text += `\n${rendered}`;
     }
   }
+  if (fallbackLine) text += `\n${fallbackLine}`;
   if (usageLine) text += `\n${theme.fg("dim", usageLine)}`;
   return new Text(text, 0, 0);
 };

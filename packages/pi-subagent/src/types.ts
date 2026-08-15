@@ -145,6 +145,8 @@ export interface SubagentResult {
   stopReason?: string;
   /** Error message if failed */
   errorMessage?: string;
+  /** Present when the first attempt hit a provider error and the whole run was retried on the fallback role: what the first attempt ran on and why it failed. The retry overwrites every other trace, so this is the only record of the first attempt. */
+  fallbackFrom?: FallbackFrom;
   /** Real-time activity log: thinking blocks and tool calls in arrival order. */
   activityLog: ActivityEntry[];
 
@@ -163,6 +165,18 @@ export interface SubagentResult {
   files?: string[];
   /** Extra context passed to delegate (params.context); used by the expanded view. */
   context?: string;
+}
+
+/** Snapshot of a failed first attempt that was retried on the fallback role. */
+export interface FallbackFrom {
+  /** Model identifier the first attempt ran on. */
+  model?: string;
+  /** Stop reason of the first attempt. */
+  stopReason?: string;
+  /** Human-readable error message of the first attempt. */
+  errorMessage?: string;
+  /** Tail of the first attempt's stderr, truncated for diagnostics. */
+  stderrTail?: string;
 }
 
 /** TUI details structure passed via tool result details. */

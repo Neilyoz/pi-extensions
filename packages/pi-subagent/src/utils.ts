@@ -6,6 +6,7 @@
 import * as os from "node:os";
 import type {
   ActivityEntry,
+  FallbackFrom,
   SubagentDetails,
   SubagentRole,
   SubagentResult,
@@ -205,12 +206,67 @@ export function hasFailedSubagentResult(details: unknown): boolean {
   return Array.isArray(d?.results) && d.results.some(isFailedResult);
 }
 
+/** Provider-error keywords that make a failed run worth retrying on the fallback role. */
+const PROVIDER_ERROR_RE =
+  /429|quota|rate.?limit|auth|timeout|exhausted|unavailable|503|server error|temporary|declined|overloaded|econnreset|socket hang up|epipe|network|connection/i;
+
 /** Heuristic: does this result look like a provider-side failure worth retrying on the fallback role? */
 export function isProviderError(result: SubagentResult): boolean {
-  const haystack = `${result.stderr || ""}\n${result.errorMessage || ""}`;
-  return /429|quota|rate.?limit|auth|timeout|exhausted|unavailable|503|server error|temporary|declined|overloaded|econnreset|socket hang up|epipe|network|connection/i.test(
-    haystack,
-  );
+  return PROVIDER_ERROR_RE.test(`${result.stderr || ""}\n${result.errorMessage || ""}`);
+}
+
+/** Cap for the stderr tail kept in fallback diagnostics. */
+export const FALLBACK_STDERR_TAIL = 400;
+
+const ANSI_ESCAPE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+/**
+ * Best-effort diagnosis from stderr when the child died before any message_end
+ * (e.g. 429 on the very first request — model/errorMessage/stopReason all unset).
+ * Returns the last stderr line mentioning a provider-error keyword: pi prints
+ * the fatal error near exit, so the last match is the most specific.
+ */
+export function extractProviderReason(text: string): string | undefined {
+  const lines = text
+    .replace(ANSI_ESCAPE, "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (PROVIDER_ERROR_RE.test(lines[i])) return lines[i];
+  }
+  return undefined;
+}
+
+/**
+ * Snapshot a failed first attempt for fallback observability.
+ * The fallback retry overwrites the result, so this snapshot is the only
+ * trace of why the first attempt died. stderr is noisy (TUI teardown
+ * escape sequences) — only a truncated tail is kept.
+ *
+ * `requestedModel` fills the model field when the child died before any
+ * message_end — the parent always knows what it asked for.
+ */
+export function buildFallbackFrom(first: SubagentResult, requestedModel?: string): FallbackFrom {
+  const tail = first.stderr.slice(-FALLBACK_STDERR_TAIL).trim();
+  return {
+    model: first.model ?? requestedModel,
+    stopReason: first.stopReason,
+    errorMessage: first.errorMessage || extractProviderReason(tail),
+    stderrTail: tail || undefined,
+  };
+}
+
+/**
+ * One-line human-readable fallback reason, e.g.
+ * `first attempt deepseek-v4-flash failed (Timed out after 900s)`.
+ * Prefer errorMessage; fall back to stopReason, else a generic label.
+ */
+export function formatFallback(f: FallbackFrom): string {
+  const reason = f.errorMessage || f.stopReason || "provider error";
+  const firstLine = reason.split("\n")[0];
+  const short = firstLine.length > 100 ? `${firstLine.slice(0, 100)}...` : firstLine;
+  return `first attempt ${f.model ?? "unknown model"} failed (${short})`;
 }
 
 /**

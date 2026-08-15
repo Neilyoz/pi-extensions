@@ -22,29 +22,34 @@ import {
   effectiveTimeout,
   elapsedSeconds,
   hasFailedSubagentResult,
+  buildFallbackFrom,
+  formatFallback,
+  FALLBACK_STDERR_TAIL,
 } from "./utils.ts";
 import type { SubagentResult, SubagentRole } from "./types.ts";
 
+/** Shared SubagentResult fixture. */
+const baseResult = (overrides: Partial<SubagentResult> = {}): SubagentResult => ({
+  role: "worker",
+  task: "test task",
+  exitCode: 0,
+  messages: [],
+  output: "ok",
+  stderr: "",
+  usage: {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    contextTokens: 0,
+    turns: 0,
+  },
+  activityLog: [],
+  ...overrides,
+});
+
 describe("subagent failure details", () => {
-  const baseResult = (overrides: Partial<SubagentResult> = {}): SubagentResult => ({
-    role: "worker",
-    task: "test task",
-    exitCode: 0,
-    messages: [],
-    output: "ok",
-    stderr: "",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
-    activityLog: [],
-    ...overrides,
-  });
 
   test("detects failed delegate results for tool_result error marking", () => {
     assert.equal(
@@ -97,26 +102,7 @@ describe("sanitizeFilename", () => {
 
 // ── isProviderError: guards the #9 expanded word list ──
 describe("isProviderError", () => {
-  const mk = (stderr: string, errorMessage = ""): SubagentResult =>
-    ({
-      stderr,
-      errorMessage,
-      role: "",
-      task: "",
-      exitCode: 0,
-      messages: [],
-      output: "",
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: 0,
-        contextTokens: 0,
-        turns: 0,
-      },
-      activityLog: [],
-    }) as unknown as SubagentResult;
+  const mk = (stderr: string, errorMessage = ""): SubagentResult => baseResult({ stderr, errorMessage });
 
   test("matches provider error keywords", () => {
     const cases = [
@@ -366,5 +352,81 @@ describe("elapsedSeconds", () => {
   test("running: clamps negative drift (future startTime) to 0", () => {
     const start = Date.now() + 10000; // 10s in the future
     assert.equal(elapsedSeconds({ exitCode: -1, startTime: start }), 0);
+  });
+});
+
+describe("fallback observability", () => {
+  const failed = (overrides: Partial<SubagentResult> = {}): SubagentResult =>
+    baseResult({
+      role: "researcher",
+      exitCode: 1,
+      model: "opencode-go/deepseek-v4-flash",
+      stopReason: "timeout",
+      errorMessage: "Timed out after 900s",
+      ...overrides,
+    });
+
+  test("buildFallbackFrom snapshots the failed attempt", () => {
+    const f = buildFallbackFrom(failed());
+    assert.equal(f.model, "opencode-go/deepseek-v4-flash");
+    assert.equal(f.stopReason, "timeout");
+    assert.equal(f.errorMessage, "Timed out after 900s");
+    assert.equal(f.stderrTail, undefined);
+  });
+
+  test("buildFallbackFrom keeps a truncated stderr tail", () => {
+    const noise = "x".repeat(2000);
+    const f = buildFallbackFrom(failed({ stderr: `${noise}HTTP 429 at tail` }));
+    assert.ok(f.stderrTail!.endsWith("HTTP 429 at tail"));
+    assert.ok(f.stderrTail!.length <= FALLBACK_STDERR_TAIL);
+  });
+
+  test("buildFallbackFrom drops whitespace-only stderr", () => {
+    const f = buildFallbackFrom(failed({ stderr: "   \n\t " }));
+    assert.equal(f.stderrTail, undefined);
+  });
+
+  test("formatFallback prefers errorMessage", () => {
+    assert.equal(
+      formatFallback({ model: "ds", stopReason: "timeout", errorMessage: "boom" }),
+      "first attempt ds failed (boom)",
+    );
+  });
+
+  test("formatFallback falls back to stopReason then a generic label", () => {
+    assert.equal(formatFallback({ model: "ds", stopReason: "timeout" }), "first attempt ds failed (timeout)");
+    assert.equal(formatFallback({}), "first attempt unknown model failed (provider error)");
+  });
+
+  test("formatFallback keeps a single truncated line", () => {
+    assert.equal(formatFallback({ model: "ds", errorMessage: "line1\nline2" }), "first attempt ds failed (line1)");
+    const long = "y".repeat(150);
+    const out = formatFallback({ model: "ds", errorMessage: long });
+    assert.equal(out, `first attempt ds failed (${"y".repeat(100)}...)`);
+    assert.ok(out.endsWith("...)"));
+  });
+
+  test("buildFallbackFrom fills model from the requested model when the child died early", () => {
+    const f = buildFallbackFrom(failed({ model: undefined }), "opencode-go/deepseek-v4-flash");
+    assert.equal(f.model, "opencode-go/deepseek-v4-flash");
+  });
+
+  test("buildFallbackFrom derives a reason from stderr when errorMessage is unset", () => {
+    const f = buildFallbackFrom(
+      failed({ errorMessage: undefined, stderr: "\x1b[2Knoise\nError: 429 Too Many Requests\n\x1b[?25h" }),
+    );
+    assert.equal(f.errorMessage, "Error: 429 Too Many Requests");
+  });
+
+  test("an explicit errorMessage wins over stderr", () => {
+    const f = buildFallbackFrom(failed({ stderr: "connection reset by peer 429" }));
+    assert.equal(f.errorMessage, "Timed out after 900s");
+  });
+
+  test("formatFallback shows the error message, never raw stderr content", () => {
+    const f = buildFallbackFrom(failed({ stderr: "CONNECTIVITY monster line mentioning 429" }));
+    const out = formatFallback(f);
+    assert.ok(out.includes("Timed out after 900s"));
+    assert.ok(!out.includes("CONNECTIVITY"));
   });
 });

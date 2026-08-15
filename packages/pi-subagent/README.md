@@ -46,6 +46,7 @@ This means:
 - **During execution**: Shows role, elapsed time, turn count, and live tool calls
 - **Collapsed result**: `✓ explorer · Found login, registration, and token logic` + recent tool calls + usage stats
 - **Expanded result** (Ctrl+O): Full task text, all tool calls, final output as rendered Markdown, and usage details
+- **Fallback trace**: when a provider error (429, quota, timeout, ...) kills a run and it is retried on the role's `fallbackRole`, a `⚠ fallback: first attempt <model> failed (<reason>)` line appears in both views — also while the retry is running (see [Fallback observability](#fallback-observability))
 
 ## Commands
 
@@ -138,7 +139,7 @@ Override, disable, or add subagent roles via `agentOverrides`. Built-in and cust
 
 **Required fields for custom roles:** `role`, `description`, `examples`, `decisionTrigger`, `tools`, `systemPrompt`.
 
-**Optional fields:** `subagentRoles` (roles this role can spawn via delegate), `timeout` (per-role active-time timeout in seconds; unset or `0` is unlimited, negative values normalize to `0`), `maxTurns` / `maxCost` (per-role budget overrides; unset uses the top-level `maxTurns` / `maxCost` setting, `0` is unlimited, negative values normalize to `0`), `fallbackRole` (backup pi-model-roles role on provider errors).
+**Optional fields:** `subagentRoles` (roles this role can spawn via delegate), `timeout` (per-role active-time timeout in seconds; unset or `0` is unlimited, negative values normalize to `0`), `maxTurns` / `maxCost` (per-role budget overrides; unset uses the top-level `maxTurns` / `maxCost` setting, `0` is unlimited, negative values normalize to `0`), `fallbackRole` (backup pi-model-roles role on provider errors — see [Fallback observability](#fallback-observability)).
 
 Invalid custom roles (missing required fields) are silently skipped with an error notification at session start.
 
@@ -209,9 +210,13 @@ Each path is injected as an independent `@file` attachment the subagent reads di
 
 When a run's output exceeds the size limit (50,000 chars), pi-subagent first tries to **compress** it with the summary model (same role configured under `summary.role`) into a compact form that preserves conclusions, code, file paths, and errors. If compression fails or doesn't shrink enough, it falls back to mechanical head+tail truncation. The prepared text is what the main model receives and what the expanded TUI renders; a hint line notes which method was used. The **full raw output is always kept in the history file** for auditing.
 
+### Fallback observability
+
+When a provider error (429, quota, timeout, ...) kills a run and the whole task is retried on the role's `fallbackRole`, the retry no longer hides the failure. The first attempt's model, stop reason, error message, and a stderr tail are snapshotted into `fallbackFrom` and surfaced everywhere: a `⚠ fallback:` line in the TUI (collapsed and expanded, including while the retry runs), a `--- fallback: ... ---` note in the tool result the main model reads (on success and failure alike), and a `fallbackFrom` field in the history file. When the child dies before its first message (e.g. an instant 429), the reason is recovered from stderr and the model name from what the parent requested.
+
 ### Run history
 
-Every completed delegate run is written (best-effort) to `~/.pi/subagent/history/{sessionId}/{toolCallId}.json`, recording role, task, usage, activity log, and the **full raw output** (even when the main model saw a compressed/truncated version). Useful for auditing what subagents did and how much they cost. Disable with `history.enabled: false`.
+Every completed delegate run is written (best-effort) to `~/.pi/subagent/history/{sessionId}/{toolCallId}.json`, recording role, task, usage, activity log, the **full raw output** (even when the main model saw a compressed/truncated version), and the `fallbackFrom` snapshot when the run was retried on the fallback role. Useful for auditing what subagents did and how much they cost. Disable with `history.enabled: false`.
 
 ## License
 

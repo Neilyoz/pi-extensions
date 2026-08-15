@@ -42,6 +42,7 @@ export function persistSubagentHistory(
       output: rawOutput ?? r.output,
       outputMethod: r.outputMethod,
       errorMessage: r.errorMessage,
+      fallbackFrom: r.fallbackFrom,
       usage: r.usage,
       activityLog: r.activityLog,
     };
