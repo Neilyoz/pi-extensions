@@ -1,6 +1,7 @@
 /**
- * Pure helpers for pi-subagent: formatting, sanitization, and the concurrency
- * semaphore. No pi-API or I/O dependencies — safe to unit-test.
+ * Pure helpers for pi-subagent: formatting, sanitization, the concurrency
+ * semaphore, render-side timers, and notification throttling. No pi-API or
+ * I/O dependencies — safe to unit-test.
  */
 
 import * as os from "node:os";
@@ -34,16 +35,28 @@ export function formatTokens(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
-export function formatUsageStats(usage: SubagentResult["usage"], model?: string): string {
+/**
+ * Usage parts shared by the TUI stats line and the LLM usage footer.
+ * `withCache` adds the cache-read/write and peak-context figures (TUI only —
+ * the LLM footer stays lean).
+ */
+function usageParts(usage: SubagentUsage, model: string | undefined, withCache: boolean): string[] {
   const parts: string[] = [];
   if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
   if (usage.input) parts.push(`\u2191${formatTokens(usage.input)}`);
   if (usage.output) parts.push(`\u2193${formatTokens(usage.output)}`);
-  if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
-  if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
+  if (withCache) {
+    if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
+    if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
+    if (usage.contextTokens) parts.push(`ctx${formatTokens(usage.contextTokens)}`);
+  }
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
   if (model) parts.push(model);
-  return parts.join(" ");
+  return parts;
+}
+
+export function formatUsageStats(usage: SubagentUsage, model?: string): string {
+  return usageParts(usage, model, true).join(" ");
 }
 
 /**
@@ -67,6 +80,31 @@ export function elapsedSeconds(r: {
     return Math.round(r.elapsedMs / 1000);
   }
   return undefined;
+}
+
+/**
+ * Elapsed/budget time text for a frame: `42s/900s(+7s)` while budgeted (grace
+ * = time the child spent inside nested delegates, live-computed from an open
+ * pause), `42s` without a budget. null when no time is known (queued frames).
+ */
+export function formatTimePart(r: {
+  exitCode: number;
+  startTime?: number;
+  elapsedMs?: number;
+  budgetMs?: number;
+  graceMs?: number;
+  pauseStart?: number;
+}): string | null {
+  const secs = elapsedSeconds(r);
+  if (secs == null) return null;
+  const budgetSec = r.budgetMs ? Math.round(r.budgetMs / 1000) : 0;
+  const liveGraceMs = (r.graceMs ?? 0) + (r.pauseStart ? Date.now() - r.pauseStart : 0);
+  const graceSec = Math.round(liveGraceMs / 1000);
+  return budgetSec > 0
+    ? graceSec > 0
+      ? `${secs}s/${budgetSec}s(+${graceSec}s)`
+      : `${secs}s/${budgetSec}s`
+    : `${secs}s`;
 }
 
 export type DisplayItem =
@@ -204,6 +242,126 @@ export function renderDisplayItems(
   return text.trimEnd();
 }
 
+// ── Shared result-view composition ─────────────────────────────
+// Used by the foreground delegate row (./render.ts) and the background
+// wait/check rows (./render-async.ts) so every view renders the same
+// outcome the same way.
+
+/** Plain-text fallback when details are missing (thrown errors, malformed results). */
+export function contentText(result: { content: Array<{ type: string; text?: string }> }): string {
+  const text = result.content[0];
+  return text?.type === "text" && text.text ? text.text : "(no output)";
+}
+
+/** First line of the task, truncated to one row (the always-visible anchor). */
+export function taskPreview(task: string): string {
+  const firstLine = task.split("\n")[0];
+  return firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
+}
+
+/** Status icon for a run frame: ⏸ queued / ⏳ running / ⏱ timeout / ⏲ budget / ✗ failed / ✓ ok */
+export function runIcon(
+  r: { exitCode: number; queued?: boolean; stopReason?: string },
+  fg: (color: string, text: string) => string,
+): string {
+  const state = deriveRunState(r);
+  if (state === "queued") return fg("warning", "\u23F8");
+  if (state === "running") return fg("warning", "\u23F3");
+  if (r.stopReason === "timeout") return fg("warning", "\u23F1");
+  if (r.stopReason === "budget_exceeded") return fg("warning", "\u23F2");
+  if (state === "failed") return fg("error", "\u2717");
+  return fg("success", "\u2713");
+}
+
+/** Failure result-line content: errorMessage → stop-reason label → "failed". */
+function failureResultText(r: {
+  errorMessage?: string;
+  stopReason?: string;
+}): { content: string; col: "warning" | "error" } {
+  const isTimeout = r.stopReason === "timeout";
+  const isBudget = r.stopReason === "budget_exceeded";
+  return {
+    content: r.errorMessage || (isTimeout ? "Timed out" : isBudget ? "Budget exceeded" : "failed"),
+    col: isTimeout || isBudget ? "warning" : "error",
+  };
+}
+
+/** Success result-line content: AI summary → output first line → placeholder. */
+function successResultText(r: {
+  summary?: string;
+  output: string;
+}): { content: string; col: "text" | "muted" } {
+  const firstLine = r.output.trim().split("\n")[0] ?? "";
+  const preview = firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
+  const content = r.summary || preview;
+  return { content: content || "(no output)", col: content ? "text" : "muted" };
+}
+
+/**
+ * Composed terminal result line `<icon> <content>`. Budget stops count as the
+ * failure presentation (their output is partial and the reason matters), even
+ * though the run state itself is "succeeded". `succeededText` (wait's
+ * "finished") replaces the success chain for status-only views.
+ */
+export function terminalResultLine(
+  r: {
+    exitCode: number;
+    queued?: boolean;
+    stopReason?: string;
+    errorMessage?: string;
+    summary?: string;
+    output: string;
+  },
+  fg: (color: string, text: string) => string,
+  succeededText?: string,
+): string {
+  const icon = runIcon(r, fg);
+  if (isFailedResult(r) || r.stopReason === "budget_exceeded") {
+    const t = failureResultText(r);
+    return `${icon} ${fg(t.col, t.content)}`;
+  }
+  if (succeededText !== undefined) return `${icon} ${fg("text", succeededText)}`;
+  const t = successResultText(r);
+  return `${icon} ${fg(t.col, t.content)}`;
+}
+
+// ── Render-side elapsed-time animation ─────────────────────────
+
+/** Per-row render state slot holding the elapsed-time animation timer. */
+interface ElapsedTimerState {
+  elapsedTimer?: ReturnType<typeof setInterval>;
+}
+
+/**
+ * While a run is live, force a TUI repaint every second so the elapsed time
+ * ticks up even when the child process is idle. Uses context.invalidate()
+ * (pi's official re-render hook) rather than pushing data via onUpdate — the
+ * render recomputes elapsed time fresh from Date.now().
+ */
+export function ensureElapsedTimer(context: {
+  state: Record<string, unknown>;
+  invalidate?: () => void;
+}): void {
+  const state = context.state as ElapsedTimerState;
+  if (state.elapsedTimer) return;
+  if (typeof context.invalidate !== "function") return;
+  state.elapsedTimer = setInterval(() => {
+    try {
+      context.invalidate?.();
+    } catch {
+      /* ignore — invalidate must never break rendering */
+    }
+  }, 1000);
+}
+
+/** Stop the elapsed-time animation once the run reaches a terminal state. */
+export function clearElapsedTimer(context: { state: Record<string, unknown> }): void {
+  const state = context.state as ElapsedTimerState;
+  if (!state.elapsedTimer) return;
+  clearInterval(state.elapsedTimer);
+  state.elapsedTimer = undefined;
+}
+
 export function isFailedResult(r: { exitCode: number; stopReason?: string }): boolean {
   return (
     r.exitCode !== 0 ||
@@ -304,12 +462,7 @@ export function describeCurrentActivity(r: { activityLog: ActivityEntry[] }): st
 
 /** Footer appended to terminal results for the main model: `\n\n--- 3 turns ↑12k ↓1k $0.01 model ---` (empty when nothing to show). */
 export function formatUsageFooter(r: { usage: SubagentUsage; model?: string }): string {
-  const parts: string[] = [];
-  if (r.usage.turns) parts.push(`${r.usage.turns} turn${r.usage.turns > 1 ? "s" : ""}`);
-  if (r.usage.input) parts.push(`\u2191${formatTokens(r.usage.input)}`);
-  if (r.usage.output) parts.push(`\u2193${formatTokens(r.usage.output)}`);
-  if (r.usage.cost) parts.push(`$${r.usage.cost.toFixed(4)}`);
-  if (r.model) parts.push(r.model);
+  const parts = usageParts(r.usage, r.model, false);
   return parts.length > 0 ? `\n\n--- ${parts.join(" ")} ---` : "";
 }
 
@@ -320,6 +473,17 @@ export function formatFallbackNote(r: { fallbackFrom?: FallbackFrom; model?: str
     : "";
 }
 
+/**
+ * Budget-stop note appended to terminal results (empty unless the run was
+ * killed for exceeding its turn/cost budget). Budget stops are intentional
+ * successes, but the reader must know the output is partial.
+ */
+export function formatBudgetNote(r: { stopReason?: string; errorMessage?: string }): string {
+  return r.stopReason === "budget_exceeded"
+    ? `\n\n--- ${r.errorMessage || "Budget exceeded"} ---`
+    : "";
+}
+
 /** LLM-facing text returned by the check tool for one run snapshot. */
 export function formatCheckText(id: string, role: string, r: SubagentResult): string {
   const state = deriveRunState(r);
@@ -327,9 +491,9 @@ export function formatCheckText(id: string, role: string, r: SubagentResult): st
   if (state === "queued") return `${head}: queued — waiting for a concurrency slot.`;
   if (state === "running") return `${head}: running — ${describeCurrentActivity(r)}`;
   if (state === "failed") {
-    return `${head}: failed — ${r.errorMessage || r.stderr || "unknown error"}\n\nPartial output:\n${r.output}`;
+    return `${head}: failed — ${r.errorMessage || r.stderr || "unknown error"}\n\nPartial output:\n${r.output}${formatFallbackNote(r)}`;
   }
-  return `${head}: finished\n\n${r.output}${formatFallbackNote(r)}${formatUsageFooter(r)}`;
+  return `${head}: finished\n\n${r.output}${formatBudgetNote(r)}${formatFallbackNote(r)}${formatUsageFooter(r)}`;
 }
 
 /** Freeze a live frame into a static snapshot: stop the elapsed clock and fold the open pause into grace. */
@@ -426,6 +590,36 @@ export class AsyncSemaphore {
     const next = this.waiters.shift();
     if (next) next();
   }
+}
+
+// ── Notification throttling ─────────────────────────────────────
+
+/**
+ * Coalesce bursty notifications into at most one `fire` per
+ * {@link PROGRESS_THROTTLE_MS}. `cancel()` drops any pending fire — call it
+ * when the owning tool call exits, so a stale update never fires afterwards.
+ */
+export function createThrottler(fire: () => void): { notify(): void; cancel(): void } {
+  let pending = false;
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  return {
+    notify() {
+      pending = true;
+      if (handle !== undefined) return;
+      handle = setTimeout(() => {
+        handle = undefined;
+        if (pending) {
+          pending = false;
+          fire();
+        }
+      }, PROGRESS_THROTTLE_MS);
+    },
+    cancel() {
+      if (handle !== undefined) clearTimeout(handle);
+      handle = undefined;
+      pending = false;
+    },
+  };
 }
 
 // ── Timeout policy ────────────────────────────────────────

@@ -9,7 +9,7 @@
  *   one-shot snapshot/result
  * - Real-time progress streaming via TUI (tool calls, turns, elapsed time)
  * - AI-generated one-line summary for compact display (configurable role)
- * - All messages collected for expanded view (Ctrl+O)
+ * - Live activity log (thinking + tool calls) for the TUI, full output on completion
  * - Accurate, concise output for the main model
  */
 
@@ -23,12 +23,15 @@ import { BUILTIN_ROLES } from "./roles.ts";
 import { getPiInvocation } from "./spawn.ts";
 import {
   AsyncSemaphore,
-  PROGRESS_THROTTLE_MS,
+  createThrottler,
+  formatBudgetNote,
   formatCheckText,
   formatFallbackNote,
+  formatTimePart,
   formatUsageFooter,
   freezeFrame,
   hasFailedSubagentResult,
+  isFailedResult,
   isWaitTimedOut,
 } from "./utils.ts";
 import { startSubagentRun, type RunHandle } from "./run.ts";
@@ -69,11 +72,18 @@ export default function subagentExtension(pi: ExtensionAPI) {
   })();
 
   const availableRoles: Record<string, SubagentRole> = {};
-  for (const [name, role] of Object.entries(BUILTIN_ROLES)) {
-    if (!ALLOWLIST || ALLOWLIST.includes(name)) {
-      availableRoles[name] = role;
+  // Rebuild available roles from BUILTIN_ROLES, filtered by the child
+  // allowlist. Called at init and again in session_start so repeated
+  // session_start is idempotent — overrides don't accumulate.
+  function refreshAvailableRoles(): void {
+    for (const key of Object.keys(availableRoles)) delete availableRoles[key];
+    for (const [name, role] of Object.entries(BUILTIN_ROLES)) {
+      if (!ALLOWLIST || ALLOWLIST.includes(name)) {
+        availableRoles[name] = role;
+      }
     }
   }
+  refreshAvailableRoles();
 
   // ── Background run registry ────────────────────────────────────
   // Process-lifetime map of background runs. Foreground delegate runs are NOT
@@ -81,19 +91,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
   // must stay resolvable so check can fetch results long after wait returned.
   const backgroundRuns = new Map<string, RunHandle>();
   let runCounter = 0;
-
-  function registerBackgroundRun(run: RunHandle): void {
-    backgroundRuns.set(run.id, run);
-    // Terminal snapshots never feed the TUI from messages (renderers only read
-    // output/activityLog) and history is already persisted by the engine — drop
-    // the message bodies so long-lived registries don't accumulate tool output.
-    const stop = run.subscribe(() => {
-      if (run.result) {
-        run.result.messages = [];
-        stop();
-      }
-    });
-  }
 
   // Mutable guidelines array — rebuilt in session_start to reflect agentOverrides
   const guidelines: string[] = [];
@@ -172,15 +169,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     config = loadSubagentConfig(ctx.cwd);
     concurrencyGate = new AsyncSemaphore(config.maxConcurrency);
 
-    // Rebuild from BUILTIN_ROLES (respecting ALLOWLIST) so repeated
-    // session_start is idempotent — overrides from prior sessions don't accumulate.
-    for (const key of Object.keys(availableRoles)) delete availableRoles[key];
-    for (const [name, role] of Object.entries(BUILTIN_ROLES)) {
-      if (!ALLOWLIST || ALLOWLIST.includes(name)) {
-        availableRoles[name] = role;
-      }
-    }
-
+    refreshAvailableRoles();
     applyAgentOverrides(availableRoles, config.agentOverrides);
 
     // Validate custom roles (skip built-in roles — they already have all fields)
@@ -304,7 +293,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
       // ── Background: return the id immediately; the pipeline keeps running. ──
       if (params.background) {
-        registerBackgroundRun(run);
+        backgroundRuns.set(run.id, run);
         return {
           content: [
             { type: "text", text: `Background subagent started — id: ${run.id} (${params.role}).` },
@@ -320,42 +309,27 @@ export default function subagentExtension(pi: ExtensionAPI) {
       }
 
       // ── Foreground: the same async engine, blocked on here. ──
-      // Throttle state hoisted to the execute scope so the finally block can
-      // clear it (try-body `let` is invisible to finally — separate block scope).
-      let pendingFrame: SubagentResult | undefined;
-      let throttleHandle: ReturnType<typeof setTimeout> | undefined;
-
       const emit = (results: SubagentResult[], text: string) => {
         onUpdate?.({
           content: [{ type: "text", text }],
-          details: { mode: "single", results },
+          details: { results },
         });
       };
-      const progressText = (f: SubagentResult): string => {
-        const realElapsed = Math.round((Date.now() - (f.startTime ?? Date.now())) / 1000);
-        const budgetSec = f.budgetMs ? Math.round(f.budgetMs / 1000) : 0;
-        const graceMs = (f.graceMs ?? 0) + (f.pauseStart ? Date.now() - f.pauseStart : 0);
-        const graceSec = Math.round(graceMs / 1000);
-        const timeText =
-          budgetSec > 0
-            ? graceSec > 0
-              ? `${realElapsed}s/${budgetSec}s(+${graceSec}s)`
-              : `${realElapsed}s/${budgetSec}s`
-            : `${realElapsed}s`;
-        return `${params.role}  ${timeText}  ${f.usage.turns} turn${f.usage.turns !== 1 ? "s" : ""}`;
-      };
+      const progressText = (f: SubagentResult): string =>
+        `${params.role}  ${formatTimePart(f) ?? "0s"}  ${f.usage.turns} turn${f.usage.turns !== 1 ? "s" : ""}`;
+
+      let pendingFrame: SubagentResult | undefined;
+      const progressThrottle = createThrottler(() => {
+        const f = pendingFrame;
+        pendingFrame = undefined;
+        if (f) emit([f], progressText(f));
+      });
 
       const unsubscribe = run.subscribe(() => {
         if (run.result) return; // the terminal frame is emitted explicitly below
         if (!onUpdate) return;
         pendingFrame = run.snapshot;
-        if (throttleHandle !== undefined) return;
-        throttleHandle = setTimeout(() => {
-          throttleHandle = undefined;
-          const f = pendingFrame;
-          pendingFrame = undefined;
-          if (f) emit([f], progressText(f));
-        }, PROGRESS_THROTTLE_MS);
+        progressThrottle.notify();
       });
 
       // Emit a queued placeholder only when this call will actually wait.
@@ -366,8 +340,8 @@ export default function subagentExtension(pi: ExtensionAPI) {
       try {
         const result = await run.promise;
 
-        // Pipeline throws (abort, spawn crash) surface as tool errors — parity
-        // with the pre-engine catch path, including the empty-results final frame.
+        // Pipeline throws (abort, spawn crash) surface as tool errors. The
+        // empty-results frame keeps the TUI on the plain-content fallback.
         if (run.thrown) {
           const errorText = `Subagent (${params.role}) error: ${run.thrown.message || run.thrown}`;
           emit([], errorText);
@@ -376,30 +350,33 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
         // Fallback note: the main model must know the answer came from the
         // fallback model, not the role's primary — on success AND failure.
+        // Budget note: budget stops are intentional successes, but the model
+        // must know the output is partial.
         const fallbackNote = formatFallbackNote(result);
+        const budgetNote = formatBudgetNote(result);
 
-        if (result.exitCode !== 0 || result.errorMessage) {
+        if (isFailedResult(result)) {
           const failedText =
             `Subagent (${params.role}) failed: ${result.errorMessage || result.stderr || "unknown error"}\n\nPartial output:\n${result.output}` +
             fallbackNote;
           emit([result], failedText);
           return {
             content: [{ type: "text", text: failedText }],
-            details: { mode: "single", results: [result] },
+            details: { results: [result] },
           };
         }
 
-        const finalText = result.output + fallbackNote + formatUsageFooter(result);
+        const finalText = result.output + budgetNote + fallbackNote + formatUsageFooter(result);
         emit([result], finalText);
         return {
           content: [{ type: "text", text: finalText }],
-          details: { mode: "single", results: [result] },
+          details: { results: [result] },
         };
       } finally {
         // Cancel any trailing throttled onUpdate regardless of how we exited.
         // A stale "still running" progress event fired after the tool returns
         // corrupts framework tool state and crashes the TUI.
-        if (throttleHandle !== undefined) clearTimeout(throttleHandle);
+        progressThrottle.cancel();
         unsubscribe();
       }
     },
@@ -463,8 +440,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
         typeof params.timeout_ms === "number" && params.timeout_ms > 0 ? params.timeout_ms : 0;
 
       // ── Live mirror: forward combined snapshots into this tool row ──
-      let pending = false;
-      let throttleHandle: ReturnType<typeof setTimeout> | undefined;
       const entries = () => runs.map((r) => ({ id: r.id, role: r.role, result: r.snapshot }));
       const emit = () => {
         const counts = { queued: 0, running: 0, succeeded: 0, failed: 0 };
@@ -479,19 +454,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
           details: { entries: entries() },
         });
       };
-      const onNotify = () => {
-        if (!onUpdate) return;
-        pending = true;
-        if (throttleHandle !== undefined) return;
-        throttleHandle = setTimeout(() => {
-          throttleHandle = undefined;
-          if (pending) {
-            pending = false;
-            emit();
-          }
-        }, PROGRESS_THROTTLE_MS);
-      };
-      const unsubscribers = runs.map((r) => r.subscribe(onNotify));
+      const liveThrottle = createThrottler(emit);
+      const unsubscribers = runs.map((r) =>
+        r.subscribe(() => {
+          if (onUpdate) liveThrottle.notify();
+        }),
+      );
       // First frame right away so the row shows entries immediately.
       if (onUpdate) emit();
 
@@ -521,24 +489,29 @@ export default function subagentExtension(pi: ExtensionAPI) {
           }
         });
       } catch (err) {
-        if (timedOut || cancelled) {
-          // handled below / rethrown with context
-          if (cancelled) {
-            throw new Error(
-              "wait was cancelled — the watched subagents keep running. Call wait or check again later.",
-            );
-          }
-        } else {
-          throw err;
+        if (cancelled) {
+          throw new Error(
+            "wait was cancelled — the watched subagents keep running. Call wait or check again later.",
+          );
         }
+        if (!timedOut) throw err; // timeout is handled below via the timedOut flag
       } finally {
         if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
         if (onAbort && signal) signal.removeEventListener("abort", onAbort);
-        if (throttleHandle !== undefined) clearTimeout(throttleHandle);
+        liveThrottle.cancel();
         for (const u of unsubscribers) u();
       }
 
-      const perId = () => runs.map((r) => `${r.id}: ${r.state}`).join("\n");
+      // Budget-stopped runs report "succeeded" but their output is partial —
+      // flag it inline so the model knows to treat it as such.
+      const perId = () =>
+        runs
+          .map((r) =>
+            r.result?.stopReason === "budget_exceeded"
+              ? `${r.id}: ${r.state} (budget exceeded — output is partial)`
+              : `${r.id}: ${r.state}`,
+          )
+          .join("\n");
       if (timedOut) {
         const unfinished = runs.filter((r) => r.state === "queued" || r.state === "running");
         const text =
@@ -596,9 +569,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
       const lines: string[] = [];
       let allOk = true;
 
-      // 1. pi executable
+      // 1. pi invocation (informational — resolution is only exercised at delegate time)
       const inv = getPiInvocation(["--version"]);
-      lines.push(`[\u2713] pi invocation: ${inv.command} ${inv.args.slice(0, 1).join(" ")}`);
+      lines.push(`[i] pi invocation: ${inv.command} ${inv.args.slice(0, 2).join(" ")}`);
 
       // 2. pi-model-roles
       try {

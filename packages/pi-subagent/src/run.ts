@@ -92,7 +92,6 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
     task: opts.task,
     exitCode,
     queued: queued || undefined,
-    messages: [],
     output: "",
     stderr: "",
     usage: emptyUsage(),
@@ -214,7 +213,6 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         role: opts.role,
         task: opts.task,
         exitCode: -1,
-        messages: partial.messages ?? [],
         output: partial.output ?? "",
         stderr: "",
         usage: partial.usage ?? emptyUsage(),
@@ -249,7 +247,6 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         signal: opts.signal,
         onProgress: emitProgress,
       });
-      runResult.task = opts.task;
 
       // Retry with fallback role on provider errors (quota, auth, timeout, etc.)
       if (
@@ -282,13 +279,14 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
             signal: opts.signal,
             onProgress: emitProgress,
           });
-          runResult.task = opts.task;
           runResult.fallbackFrom = fallbackFrom;
         }
       }
 
       // Stamp terminal fields once, after any fallback retry: elapsedMs covers
-      // the whole delegate span (incl. retry); files/context mirror params for the TUI.
+      // the whole delegate span (incl. retry); role/files/context mirror the
+      // delegate params (spawn never learns the registry role name).
+      runResult.role = opts.role;
       runResult.files = opts.files;
       runResult.context = opts.context;
       runResult.elapsedMs = Date.now() - startTime;
@@ -334,7 +332,6 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
       finish(
         {
           ...inputFrame(1, false),
-          messages: partial.messages,
           output: partial.output,
           usage: partial.usage,
           model: partial.model,

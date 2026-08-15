@@ -60,6 +60,13 @@ export async function compressOutput(
   }
 }
 
+/** First line of the output as a short summary, truncated to ~65 chars. */
+function firstLineSummary(outputText: string): string | undefined {
+  const firstLine = outputText.trim().split("\n")[0];
+  if (!firstLine) return undefined;
+  return firstLine.length <= 65 ? firstLine : firstLine.slice(0, 62) + "...";
+}
+
 export async function generateSummary(
   rolesApi: ModelRolesAPI,
   outputText: string,
@@ -68,11 +75,7 @@ export async function generateSummary(
   if (!summaryConfig.enabled || !outputText.trim()) return undefined;
 
   // Short outputs don't justify an extra API call — reuse the first line directly
-  const shortTrimmed = outputText.trim();
-  if (shortTrimmed.length <= 150) {
-    const firstLine = shortTrimmed.split("\n")[0];
-    return firstLine.length <= 65 ? firstLine : firstLine.slice(0, 62) + "...";
-  }
+  if (outputText.trim().length <= 150) return firstLineSummary(outputText);
 
   try {
     if (!rolesApi.resolveRole(summaryConfig.role).model) return undefined;
@@ -106,11 +109,7 @@ export async function generateSummary(
 
     return text || undefined;
   } catch {
-    // Fall back to manual truncation: use first line of output as summary
-    const trimmed = outputText.trim();
-    if (!trimmed) return undefined;
-    const firstLine = trimmed.split("\n")[0];
-    if (firstLine.length <= 65) return firstLine;
-    return firstLine.slice(0, 62) + "...";
+    // Fall back to the first-line summary
+    return firstLineSummary(outputText);
   }
 }

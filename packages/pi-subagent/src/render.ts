@@ -1,71 +1,34 @@
 /**
- * TUI rendering for the delegate tool: the call row (`delegate <role>`) and the
- * result view (collapsed and expanded), plus the render-side elapsed-time timer.
+ * TUI rendering for the delegate tool: the call row (`subagent_delegate <role>`)
+ * and the result view (collapsed and expanded). Shared composition helpers
+ * (icons, result lines, timers) live in ./utils.ts and are used by
+ * ./render-async.ts too, so every view renders an outcome the same way.
  */
 
-import {
-  getMarkdownTheme,
-  type ThemeColor,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { SubagentDetails } from "./types.ts";
+import {
+  buildDisplayItems,
+  clearElapsedTimer,
+  contentText,
+  ensureElapsedTimer,
+  formatFallback,
+  formatThinking,
+  formatTimePart,
+  formatToolCall,
+  formatUsageStats,
+  renderDisplayItems,
+  runIcon,
+  statusStyle,
+  taskPreview,
+  terminalResultLine,
+} from "./utils.ts";
 
 // Contextual types derived from ToolDefinition so we don't depend on
 // non-root-exported render types (ToolRenderContext is internal).
 type RenderCallFn = NonNullable<ToolDefinition["renderCall"]>;
 type RenderResultFn = NonNullable<ToolDefinition["renderResult"]>;
-import {
-  buildDisplayItems,
-  formatFallback,
-  formatUsageStats,
-  elapsedSeconds,
-  formatToolCall,
-  statusStyle,
-  formatThinking,
-  renderDisplayItems,
-  isFailedResult,
-} from "./utils.ts";
-
-// ── Elapsed-time animation (render-side timer) ───────────────
-
-/**
- * Per-row render state slot holding the elapsed-time animation timer.
- * The handle lives in context.state so it is scoped to one tool row.
- */
-interface DelegateRenderState {
-  elapsedTimer?: ReturnType<typeof setInterval>;
-}
-
-/**
- * While a delegate is running, force a TUI repaint every second so the
- * elapsed time ticks up even when the child process is idle. Uses
- * context.invalidate() (pi's official re-render hook) rather than pushing
- * data via onUpdate — the render recomputes elapsed time fresh from Date.now().
- */
-function ensureElapsedTimer(context: {
-  state: Record<string, unknown>;
-  invalidate?: () => void;
-}): void {
-  const state = context.state as DelegateRenderState;
-  if (state.elapsedTimer) return;
-  if (typeof context.invalidate !== "function") return;
-  state.elapsedTimer = setInterval(() => {
-    try {
-      context.invalidate?.();
-    } catch {
-      /* ignore — invalidate must never break rendering */
-    }
-  }, 1000);
-}
-
-/** Stop the elapsed-time animation once the run reaches a terminal state. */
-function clearElapsedTimer(context: { state: Record<string, unknown> }): void {
-  const state = context.state as DelegateRenderState;
-  if (!state.elapsedTimer) return;
-  clearInterval(state.elapsedTimer);
-  state.elapsedTimer = undefined;
-}
 
 // ── renderCall: what the user sees when the tool is invoked ─────
 
@@ -94,82 +57,32 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
   }
 
   if (!details || details.results.length === 0) {
-    const text = result.content[0];
-    return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+    return new Text(contentText(result), 0, 0);
   }
 
   const r = details.results[0];
-  const isError = !isRunning && isFailedResult(r);
-  const isTimeout = !isRunning && r.stopReason === "timeout";
-  const isBudget = !isRunning && r.stopReason === "budget_exceeded";
-  const isFailedState = isError || isTimeout || isBudget;
-
-  // Status icon. ⏳ running / ⏸ queued (pause) / ⏱ timeout / ⏲ budget / ✗ error / ✓ ok
-  let icon: string;
-  if (isRunning) {
-    icon = r.queued ? theme.fg("warning", "\u23F8") : theme.fg("warning", "\u23F3");
-  } else if (isTimeout) {
-    icon = theme.fg("warning", "\u23F1");
-  } else if (isBudget) {
-    icon = theme.fg("warning", "\u23F2");
-  } else if (isError) {
-    icon = theme.fg("error", "\u2717");
-  } else {
-    icon = theme.fg("success", "\u2713");
-  }
-
+  const fg = theme.fg.bind(theme) as (color: string, text: string) => string;
+  const icon = runIcon(r, fg);
   const displayItems = buildDisplayItems(r.activityLog);
   const mdTheme = getMarkdownTheme();
-  const fg = theme.fg.bind(theme) as (color: string, text: string) => string;
 
-  // Task preview: first line, truncated to one row (always-visible anchor).
-  const firstLine = r.task.split("\n")[0];
-  const taskPreview = firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
   // taskline: indicator prefix while running/queued; bare text once finished.
+  const preview = taskPreview(r.task);
   let taskline: string;
   if (isRunning) {
     const label = r.queued ? "(queued)" : "(running)";
-    taskline = `${icon} ${theme.fg("dim", label)} ${theme.fg("text", taskPreview)}`;
+    taskline = `${icon} ${theme.fg("dim", label)} ${theme.fg("text", preview)}`;
   } else {
-    taskline = theme.fg("text", taskPreview);
+    taskline = theme.fg("text", preview);
   }
 
-  // usage line: elapsed/budget(+grace) prefix + existing stats.
-  const secs = elapsedSeconds(r);
+  // usage line: elapsed/budget(+grace) prefix + stats.
   const stats = formatUsageStats(r.usage, r.model);
-  const budgetSec = r.budgetMs ? Math.round(r.budgetMs / 1000) : 0;
-  const liveGraceMs = (r.graceMs ?? 0) + (r.pauseStart ? Date.now() - r.pauseStart : 0);
-  const graceSec = Math.round(liveGraceMs / 1000);
-  let timePart: string | null = null;
-  if (secs != null) {
-    timePart =
-      budgetSec > 0
-        ? graceSec > 0
-          ? `${secs}s/${budgetSec}s(+${graceSec}s)`
-          : `${secs}s/${budgetSec}s`
-        : `${secs}s`;
-  }
-  const usageLine = [timePart, stats].filter(Boolean).join(" \u00b7 ");
+  const usageLine = [formatTimePart(r), stats].filter(Boolean).join(" \u00b7 ");
 
-  // resultline: fixed line on terminal frames — `<icon> <content>` colored by outcome.
-  // success → AI summary, else first line of output (truncated), else a placeholder — never blank.
-  // error/timeout/budget → errorMessage (or a default label).
-  let resultline: string | undefined;
-  if (!isRunning) {
-    if (isFailedState) {
-      const content =
-        r.errorMessage || (isTimeout ? "Timed out" : isBudget ? "Budget exceeded" : "failed");
-      const col: ThemeColor = isTimeout || isBudget ? "warning" : "error";
-      resultline = `${icon} ${theme.fg(col, content)}`;
-    } else {
-      // success fallback chain: summary → output first line → placeholder.
-      const firstLine = r.output.trim().split("\n")[0] ?? "";
-      const preview = firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
-      const content = r.summary || preview;
-      const col: ThemeColor = content ? "text" : "muted";
-      resultline = `${icon} ${theme.fg(col, content || "(no output)")}`;
-    }
-  }
+  // resultline: fixed line on terminal frames — the shared chain (failure or
+  // budget reason on stops, summary → first output line → placeholder on success).
+  const resultline = isRunning ? undefined : terminalResultLine(r, fg);
 
   // Fallback trace: the role's primary model hit a provider error and the run is
   // being / was retried on the fallback role — warn, don't error (the retry may
@@ -181,7 +94,7 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
   if (expanded) {
     const container = new Container();
 
-    // Header: taskline + resultline (summary on success, error message on failure).
+    // Header: taskline + resultline (summary on success, reason on failure).
     container.addChild(new Text(taskline, 0, 0));
     if (resultline) {
       container.addChild(new Text(resultline, 0, 0));
@@ -205,10 +118,7 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
 
     // Activity stream (shown while running and after completion).
     container.addChild(new Spacer(1));
-    const activity = displayItems.filter(
-      (item) => item.type === "toolCall" || item.type === "thinking",
-    );
-    if (activity.length === 0) {
+    if (displayItems.length === 0) {
       const runningLabel = isRunning
         ? r.queued
           ? "(queued \u2014 waiting for a concurrency slot...)"
@@ -216,7 +126,7 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
         : "(none)";
       container.addChild(new Text(theme.fg("muted", runningLabel), 0, 0));
     } else {
-      for (const item of activity) {
+      for (const item of displayItems) {
         if (item.type === "thinking") {
           container.addChild(new Text(formatThinking(item.status, fg), 0, 0));
         } else {
@@ -269,17 +179,14 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
   // Collapsed view.
   let text = taskline;
   if (!isRunning) {
-    // resultline (shared computation above).
+    // Terminal: taskline + resultline + usage — no activity replay.
     if (resultline) text += `\n${resultline}`;
   } else if (!r.queued) {
     // Running (not queued): show recent activity only.
-    const activity = displayItems.filter(
-      (item) => item.type === "toolCall" || item.type === "thinking",
-    );
-    if (activity.length === 0) {
+    if (displayItems.length === 0) {
       text += `\n${theme.fg("muted", "(running...)")}`;
     } else {
-      const rendered = renderDisplayItems(activity, 5, fg);
+      const rendered = renderDisplayItems(displayItems, 5, fg);
       if (rendered) text += `\n${rendered}`;
     }
   }

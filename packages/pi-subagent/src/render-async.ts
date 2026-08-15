@@ -4,12 +4,13 @@
  *
  * This module is deliberately independent of ./render.ts (the foreground
  * delegate family): the two presentation shapes evolve separately and share
- * only the pure per-item formatters from ./utils.ts.
+ * only the pure helpers from ./utils.ts (per-item formatters, icons, the
+ * result-line chain, and the elapsed-time timer).
  *
  * Layout contract (mirrors how foreground delegate rows decompose):
  * - background delegate row = INPUT only (static — the run outlives the call)
  * - wait row = per-run STATUS line + PROCESS stream + usage bar. When a run
- *   finishes, its result line carries only the status ("finished" / failure
+ *   finishes, its result line carries only the status ("finished" / stop
  *   reason) — the conclusion itself is check's job, for the LLM and the user
  * - check row = the same block shape, but the single-run snapshot whose result
  *   line/expanded view DO show the actual output (check is the result-fetcher)
@@ -19,7 +20,7 @@
  * line takes over the icon — never both.
  */
 
-import { getMarkdownTheme, type ThemeColor, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type {
   BackgroundDelegateDetails,
@@ -28,107 +29,42 @@ import type {
   SubagentResult,
   WaitDetails,
 } from "./types.ts";
+import {
+  buildDisplayItems,
+  clearElapsedTimer,
+  contentText,
+  deriveRunState,
+  ensureElapsedTimer,
+  formatFallback,
+  formatThinking,
+  formatTimePart,
+  formatToolCall,
+  formatUsageStats,
+  renderDisplayItems,
+  runIcon,
+  statusStyle,
+  taskPreview,
+  terminalResultLine,
+} from "./utils.ts";
 
 // Contextual types derived from ToolDefinition so we don't depend on
 // non-root-exported render types (ToolRenderContext is internal).
 type RenderCallFn = NonNullable<ToolDefinition["renderCall"]>;
 type RenderResultFn = NonNullable<ToolDefinition["renderResult"]>;
 
-import {
-  buildDisplayItems,
-  deriveRunState,
-  elapsedSeconds,
-  formatFallback,
-  formatThinking,
-  formatToolCall,
-  formatUsageStats,
-  renderDisplayItems,
-  statusStyle,
-} from "./utils.ts";
-
 type Fg = (color: string, text: string) => string;
-
-// ── Elapsed-time animation (render-side timer) ───────────────
-// Copied from ./render.ts on purpose: the async family keeps its own render
-// state slot and lifecycle, independent of the foreground delegate row.
-
-interface AsyncRenderState {
-  elapsedTimer?: ReturnType<typeof setInterval>;
-}
-
-/** While any watched run is live, repaint every second so elapsed time ticks even when the child is idle. */
-function ensureElapsedTimer(context: {
-  state: Record<string, unknown>;
-  invalidate?: () => void;
-}): void {
-  const state = context.state as AsyncRenderState;
-  if (state.elapsedTimer) return;
-  if (typeof context.invalidate !== "function") return;
-  state.elapsedTimer = setInterval(() => {
-    try {
-      context.invalidate?.();
-    } catch {
-      /* ignore — invalidate must never break rendering */
-    }
-  }, 1000);
-}
-
-/** Stop the animation once every watched run reaches a terminal state. */
-function clearElapsedTimer(context: { state: Record<string, unknown> }): void {
-  const state = context.state as AsyncRenderState;
-  if (!state.elapsedTimer) return;
-  clearInterval(state.elapsedTimer);
-  state.elapsedTimer = undefined;
-}
 
 // ── Small shared pieces (same presentation family) ─────────────
 
-/** Status icon for a run frame: ⏸ queued / ⏳ running / ⏱ timeout / ⏲ budget / ✗ failed / ✓ ok */
-function runIcon(r: SubagentResult, fg: Fg): string {
-  const state = deriveRunState(r);
-  if (state === "queued") return fg("warning", "\u23F8");
-  if (state === "running") return fg("warning", "\u23F3");
-  if (r.stopReason === "timeout") return fg("warning", "\u23F1");
-  if (r.stopReason === "budget_exceeded") return fg("warning", "\u23F2");
-  if (state === "failed") return fg("error", "\u2717");
-  return fg("success", "\u2713");
-}
-
-/** First line of the task, truncated to one row (always-visible anchor). */
-function taskPreview(task: string): string {
-  const firstLine = task.split("\n")[0];
-  return firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
-}
-
 /** Usage line: elapsed/budget(+grace) prefix + token/turn/cost stats. */
 function runUsageLine(r: SubagentResult): string | null {
-  const secs = elapsedSeconds(r);
   const stats = formatUsageStats(r.usage, r.model);
-  const budgetSec = r.budgetMs ? Math.round(r.budgetMs / 1000) : 0;
-  const liveGraceMs = (r.graceMs ?? 0) + (r.pauseStart ? Date.now() - r.pauseStart : 0);
-  const graceSec = Math.round(liveGraceMs / 1000);
-  let timePart: string | null = null;
-  if (secs != null) {
-    timePart =
-      budgetSec > 0
-        ? graceSec > 0
-          ? `${secs}s/${budgetSec}s(+${graceSec}s)`
-          : `${secs}s/${budgetSec}s`
-        : `${secs}s`;
-  }
-  return [timePart, stats].filter(Boolean).join(" \u00b7 ") || null;
-}
-
-/** Activity items in display order (thinking blocks + tool calls). */
-function activityItems(r: SubagentResult) {
-  return buildDisplayItems(r.activityLog).filter(
-    (item) => item.type === "toolCall" || item.type === "thinking",
-  );
+  return [formatTimePart(r), stats].filter(Boolean).join(" \u00b7 ") || null;
 }
 
 /** Full activity stream as container rows (shared by the expanded views). */
 function addActivityRows(container: Container, r: SubagentResult, fg: Fg): void {
-  const activity = activityItems(r);
+  const activity = buildDisplayItems(r.activityLog);
   if (activity.length === 0) {
     const state = deriveRunState(r);
     const label =
@@ -167,26 +103,13 @@ function waitStatusLine(entry: RunViewEntry, fg: Fg): string {
   return `${fg("accent", entry.id)} ${fg("text", taskPreview(r.task))}`;
 }
 
-/** wait result line: status only. The conclusion is check's job — wait never shows output. */
-function waitResultLine(r: SubagentResult, fg: Fg): string {
-  const icon = runIcon(r, fg);
-  if (deriveRunState(r) === "succeeded") {
-    return `${icon} ${fg("text", "finished")}`;
-  }
-  const isTimeout = r.stopReason === "timeout";
-  const isBudget = r.stopReason === "budget_exceeded";
-  const content = r.errorMessage || (isTimeout ? "Timed out" : isBudget ? "Budget exceeded" : "failed");
-  const col: ThemeColor = isTimeout || isBudget ? "warning" : "error";
-  return `${icon} ${fg(col, content)}`;
-}
-
 function waitEntryCollapsedText(entry: RunViewEntry, fg: Fg): string {
   const r = entry.result;
   const state = deriveRunState(r);
   let text = waitStatusLine(entry, fg);
 
   if (state === "running") {
-    const activity = activityItems(r);
+    const activity = buildDisplayItems(r.activityLog);
     if (activity.length === 0) {
       text += `\n${fg("muted", "(running...)")}`;
     } else {
@@ -195,7 +118,8 @@ function waitEntryCollapsedText(entry: RunViewEntry, fg: Fg): string {
     }
   } else if (state !== "queued") {
     // The process stream becomes the result line once the run finishes.
-    text += `\n${waitResultLine(r, fg)}`;
+    // "finished" — wait never shows output; the conclusion is check's job.
+    text += `\n${terminalResultLine(r, fg, "finished")}`;
   }
 
   const usage = runUsageLine(r);
@@ -212,7 +136,7 @@ function waitEntryExpandedContainer(entry: RunViewEntry, fg: Fg): Container {
   addFallbackRow(container, r, fg);
   container.addChild(new Spacer(1));
   if (state === "succeeded" || state === "failed") {
-    container.addChild(new Text(waitResultLine(r, fg), 0, 0));
+    container.addChild(new Text(terminalResultLine(r, fg, "finished"), 0, 0));
     container.addChild(new Spacer(1));
   }
   // Process stream in full — no output text here even when finished.
@@ -239,30 +163,12 @@ function checkStatusLine(r: SubagentResult, fg: Fg): string {
   return fg("text", taskPreview(r.task));
 }
 
-/** check result line: ✓ + AI summary (or output first line) / ✗ + reason — same chain as the foreground row. */
-function checkResultLine(r: SubagentResult, fg: Fg): string {
-  const icon = runIcon(r, fg);
-  if (deriveRunState(r) === "failed") {
-    const isTimeout = r.stopReason === "timeout";
-    const isBudget = r.stopReason === "budget_exceeded";
-    const content = r.errorMessage || (isTimeout ? "Timed out" : isBudget ? "Budget exceeded" : "failed");
-    const col: ThemeColor = isTimeout || isBudget ? "warning" : "error";
-    return `${icon} ${fg(col, content)}`;
-  }
-  // success fallback chain: summary → output first line → placeholder
-  const firstLine = r.output.trim().split("\n")[0] ?? "";
-  const preview = firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
-  const content = r.summary || preview;
-  const col: ThemeColor = content ? "text" : "muted";
-  return `${icon} ${fg(col, content || "(no output)")}`;
-}
-
 function checkEntryCollapsedText(r: SubagentResult, fg: Fg): string {
   const state = deriveRunState(r);
   let text = checkStatusLine(r, fg);
 
   if (state === "running") {
-    const activity = activityItems(r);
+    const activity = buildDisplayItems(r.activityLog);
     if (activity.length === 0) {
       text += `\n${fg("muted", "(running...)")}`;
     } else {
@@ -270,7 +176,8 @@ function checkEntryCollapsedText(r: SubagentResult, fg: Fg): string {
       if (rendered) text += `\n${rendered}`;
     }
   } else if (state !== "queued") {
-    text += `\n${checkResultLine(r, fg)}`;
+    // check is the result-fetcher: same chain as the foreground row.
+    text += `\n${terminalResultLine(r, fg)}`;
   }
 
   const usage = runUsageLine(r);
@@ -287,7 +194,7 @@ function checkEntryExpandedContainer(r: SubagentResult, fg: Fg): Container {
   container.addChild(new Spacer(1));
 
   if (state === "succeeded" || state === "failed") {
-    container.addChild(new Text(checkResultLine(r, fg), 0, 0));
+    container.addChild(new Text(terminalResultLine(r, fg), 0, 0));
     // check is the result-fetcher: the full output lives here.
     container.addChild(new Spacer(1));
     if (r.output.trim()) {
@@ -312,12 +219,6 @@ function checkEntryExpandedContainer(r: SubagentResult, fg: Fg): Container {
     container.addChild(new Text(fg("dim", usage), 0, 0));
   }
   return container;
-}
-
-/** Plain-text fallback when details are missing (thrown errors, malformed results). */
-function contentText(result: { content: Array<{ type: string; text?: string }> }): string {
-  const text = result.content[0];
-  return text?.type === "text" ? (text.text ?? "(no output)") : "(no output)";
 }
 
 // ── Background delegate: static input block ────────────────────

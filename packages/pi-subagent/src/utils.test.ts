@@ -4,10 +4,12 @@
  * Zero-dependency: runs on node's built-in test runner.
  *   node --test packages/pi-subagent/src/utils.test.ts
  *
- * These guard the bug fixes introduced during the improvement rounds:
- * path-injection (sanitizeFilename), concurrency/abort/negative-active/unlimited
- * semantics (AsyncSemaphore), provider-error word list (isProviderError), unknown-tool
- * formatting (previewArgs), output truncation fallback (truncateOutput).
+ * Coverage highlights: path-injection safety (sanitizeFilename),
+ * concurrency/abort/unlimited semantics (AsyncSemaphore), provider-error
+ * heuristics (isProviderError), shared result-view composition
+ * (terminalResultLine), time/budget formatting (formatTimePart), budget-stop
+ * and fallback provenance notes, background-run helpers, and notification
+ * throttling (createThrottler).
  */
 
 import { test, describe } from "node:test";
@@ -19,6 +21,7 @@ import {
   previewArgs,
   truncateOutput,
   formatTokens,
+  formatUsageStats,
   effectiveTimeout,
   elapsedSeconds,
   hasFailedSubagentResult,
@@ -30,8 +33,12 @@ import {
   describeCurrentActivity,
   formatUsageFooter,
   formatFallbackNote,
+  formatBudgetNote,
   formatCheckText,
+  formatTimePart,
   freezeFrame,
+  createThrottler,
+  terminalResultLine,
 } from "./utils.ts";
 import type { SubagentResult, SubagentRole } from "./types.ts";
 
@@ -40,7 +47,6 @@ const baseResult = (overrides: Partial<SubagentResult> = {}): SubagentResult => 
   role: "worker",
   task: "test task",
   exitCode: 0,
-  messages: [],
   output: "ok",
   stderr: "",
   usage: {
@@ -60,18 +66,18 @@ describe("subagent failure details", () => {
 
   test("detects failed delegate results for tool_result error marking", () => {
     assert.equal(
-      hasFailedSubagentResult({ mode: "single", results: [baseResult({ exitCode: 1 })] }),
+      hasFailedSubagentResult({ results: [baseResult({ exitCode: 1 })] }),
       true,
     );
     assert.equal(
-      hasFailedSubagentResult({ mode: "single", results: [baseResult({ stopReason: "timeout" })] }),
+      hasFailedSubagentResult({ results: [baseResult({ stopReason: "timeout" })] }),
       true,
     );
   });
 
   test("does not mark successful or malformed details as failed", () => {
-    assert.equal(hasFailedSubagentResult({ mode: "single", results: [baseResult()] }), false);
-    assert.equal(hasFailedSubagentResult({ mode: "single", results: [] }), false);
+    assert.equal(hasFailedSubagentResult({ results: [baseResult()] }), false);
+    assert.equal(hasFailedSubagentResult({ results: [] }), false);
     assert.equal(hasFailedSubagentResult(undefined), false);
     assert.equal(hasFailedSubagentResult({}), false);
   });
@@ -362,6 +368,80 @@ describe("elapsedSeconds", () => {
   });
 });
 
+// ── formatTimePart: shared elapsed/budget(+grace) text ──
+describe("formatTimePart", () => {
+  test("running frame with budget and grace", () => {
+    const r = { exitCode: -1, startTime: Date.now() - 42000, budgetMs: 900000, graceMs: 3000 };
+    assert.equal(formatTimePart(r), "42s/900s(+3s)");
+  });
+  test("running frame without budget", () => {
+    const r = { exitCode: -1, startTime: Date.now() - 3000 };
+    assert.equal(formatTimePart(r), "3s");
+  });
+  test("terminal frame uses the frozen elapsedMs", () => {
+    assert.equal(formatTimePart({ exitCode: 0, elapsedMs: 5000, budgetMs: 900000 }), "5s/900s");
+  });
+  test("queued frame has no time", () => {
+    assert.equal(formatTimePart({ exitCode: -1 }), null);
+  });
+});
+
+// ── terminalResultLine: one chain for every result view ──
+describe("terminalResultLine", () => {
+  const id = (_color: string, text: string) => text;
+
+  test("failure shows the error message in error styling", () => {
+    assert.equal(
+      terminalResultLine(baseResult({ exitCode: 1, errorMessage: "boom" }), id),
+      "\u2717 boom",
+    );
+  });
+  test("timeout/budget map to the warning styling", () => {
+    assert.equal(
+      terminalResultLine(baseResult({ stopReason: "timeout", exitCode: 124, errorMessage: "Timed out after 900s" }), id),
+      "\u23F1 Timed out after 900s",
+    );
+  });
+  test("budget-exceeded is a warning line even though the run state is succeeded", () => {
+    assert.equal(
+      terminalResultLine(
+        baseResult({ stopReason: "budget_exceeded", errorMessage: "Budget exceeded (50 turns; partial output returned)" }),
+        id,
+      ),
+      "\u23F2 Budget exceeded (50 turns; partial output returned)",
+    );
+  });
+  test("success chain: AI summary wins, then output first line, then placeholder", () => {
+    assert.equal(terminalResultLine(baseResult({ summary: "did the thing" }), id), "\u2713 did the thing");
+    assert.equal(terminalResultLine(baseResult(), id), "\u2713 ok");
+    assert.equal(terminalResultLine(baseResult({ output: "" }), id), "\u2713 (no output)");
+  });
+  test("succeededText replaces the success chain (wait's status-only line)", () => {
+    assert.equal(terminalResultLine(baseResult(), id, "finished"), "\u2713 finished");
+  });
+});
+
+// ── createThrottler: burst coalescing for onUpdate ──
+describe("createThrottler", () => {
+  test("coalesces a burst into one fire per window", async () => {
+    let fired = 0;
+    const t = createThrottler(() => fired++);
+    t.notify();
+    t.notify();
+    t.notify();
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(fired, 1);
+  });
+  test("cancel drops the pending fire", async () => {
+    let fired = 0;
+    const t = createThrottler(() => fired++);
+    t.notify();
+    t.cancel();
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(fired, 0);
+  });
+});
+
 describe("fallback observability", () => {
   const failed = (overrides: Partial<SubagentResult> = {}): SubagentResult =>
     baseResult({
@@ -480,6 +560,27 @@ describe("background run helpers", () => {
     assert.equal(formatUsageFooter(r), "\n\n--- 2 turns \u21911.2k \u2193300 $0.5000 test/model-x ---");
   });
 
+  test("formatUsageStats adds cache and peak-context figures the footer omits", () => {
+    const usage = { input: 1200, output: 300, cacheRead: 900, cacheWrite: 100, cost: 0.5, contextTokens: 45000, turns: 2 };
+    assert.equal(
+      formatUsageStats(usage, "test/model-x"),
+      "2 turns \u21911.2k \u2193300 R900 W100 ctx45k $0.5000 test/model-x",
+    );
+    // Footer stays lean — no cache/context parts.
+    assert.equal(
+      formatUsageFooter({ usage, model: "test/model-x" }),
+      "\n\n--- 2 turns \u21911.2k \u2193300 $0.5000 test/model-x ---",
+    );
+  });
+
+  test("formatBudgetNote flags budget-stopped output as partial", () => {
+    assert.equal(formatBudgetNote(baseResult()), "");
+    assert.equal(
+      formatBudgetNote(baseResult({ stopReason: "budget_exceeded", errorMessage: "Budget exceeded (50 turns)" })),
+      "\n\n--- Budget exceeded (50 turns) ---",
+    );
+  });
+
   test("formatFallbackNote is empty without a retry and descriptive with one", () => {
     assert.equal(formatFallbackNote(baseResult()), "");
     const r = baseResult({
@@ -500,6 +601,27 @@ describe("background run helpers", () => {
       /^sub-1 \(explorer\): failed — boom\n\nPartial output:\nok$/,
     );
     assert.match(formatCheckText("sub-1", "explorer", baseResult()), /^sub-1 \(explorer\): finished\n\nok$/);
+  });
+
+  test("formatCheckText flags budget-stopped runs as partial on the finished line", () => {
+    const r = baseResult({ stopReason: "budget_exceeded", errorMessage: "Budget exceeded (50 turns)" });
+    assert.match(
+      formatCheckText("sub-1", "explorer", r),
+      /^sub-1 \(explorer\): finished\n\nok\n\n--- Budget exceeded \(50 turns\) ---$/,
+    );
+  });
+
+  test("formatCheckText keeps the fallback note on failed runs too", () => {
+    const r = baseResult({
+      exitCode: 1,
+      errorMessage: "boom",
+      fallbackFrom: { model: "primary/m1", errorMessage: "429 quota exceeded" },
+      model: "fallback/m2",
+    });
+    assert.match(
+      formatCheckText("sub-1", "explorer", r),
+      /failed — boom\n\nPartial output:\nok\n\n--- fallback: first attempt primary\/m1 failed \(429 quota exceeded\); retried on fallback\/m2 ---$/,
+    );
   });
 
   test("freezeFrame stops the elapsed clock and folds the open pause into grace", () => {

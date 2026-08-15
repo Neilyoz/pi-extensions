@@ -12,7 +12,7 @@ Your primary AI has the most complete context — it knows the full conversation
 
 This means:
 - **Subagents don't plan** — the main model decides what needs to be done and provides a clear task description
-- **Subagents don't orchestrate** — if a task requires multiple steps, the main model examines each result and decides the next move
+- **Subagents don't orchestrate the overall plan** — the main model decides what to do and examines each result to pick the next move; nested delegation (worker → explorer) only offloads self-contained exploration/research inside one task
 - **Subagents don't inherit history** — they don't need the full conversation; just a precise task description
 - **Multiple subagents can run in parallel** — emit multiple `subagent_delegate` calls in one turn; pi executes them concurrently
 - **Subagents can nest subagents** — a `worker` can delegate exploration to `explorer` without returning to the main model
@@ -43,9 +43,9 @@ This means:
 
 ## TUI Display
 
-- **During execution**: Shows role, elapsed time, turn count, and live tool calls
-- **Collapsed result**: `✓ explorer · Found login, registration, and token logic` + recent tool calls + usage stats
-- **Expanded result** (Ctrl+O): Full task text, all tool calls, final output as rendered Markdown, and usage details
+- **During execution**: the task's first line with a ⏳ (or ⏸ queued) indicator, a live stream of thinking blocks and tool calls (latest 5 collapsed, everything expanded), and a usage line (elapsed/budget time, turns, tokens, peak context, cost, model)
+- **Collapsed result**: the task's first line, then `✓` + the AI-generated summary (or the first line of the output), then the usage line — no activity replay
+- **Expanded result** (Ctrl+O): reference files, context size, the full task, the complete activity stream, the final output as rendered Markdown, and usage details
 - **Fallback trace**: when a provider error (429, quota, timeout, ...) kills a run and it is retried on the role's `fallbackRole`, a `⚠ fallback: first attempt <model> failed (<reason>)` line appears in both views — also while the retry is running (see [Fallback observability](#fallback-observability))
 
 ## Commands
@@ -139,7 +139,7 @@ Override, disable, or add subagent roles via `agentOverrides`. Built-in and cust
 
 **Required fields for custom roles:** `role`, `description`, `examples`, `decisionTrigger`, `tools`, `systemPrompt`.
 
-**Optional fields:** `subagentRoles` (roles this role can spawn via delegate), `timeout` (per-role active-time timeout in seconds; unset or `0` is unlimited, negative values normalize to `0`), `maxTurns` / `maxCost` (per-role budget overrides; unset uses the top-level `maxTurns` / `maxCost` setting, `0` is unlimited, negative values normalize to `0`), `fallbackRole` (backup pi-model-roles role on provider errors — see [Fallback observability](#fallback-observability)).
+**Optional fields:** `subagentRoles` (roles this role can spawn via delegate), `timeout` (per-role active-time timeout in seconds; unset or `0` is unlimited, negative values normalize to `0`), `maxTurns` / `maxCost` (per-role budget overrides; unset uses the top-level `maxTurns` / `maxCost` setting, `0` is unlimited, negative values normalize to `0`), `fallbackRole` (backup pi-model-roles role the whole run is retried on after a provider error; unset means no retry — see [Fallback observability](#fallback-observability)).
 
 Invalid custom roles (missing required fields) are silently skipped with an error notification at session start.
 
@@ -212,8 +212,8 @@ Semantics worth knowing:
 Each tool row renders one aspect of the same decomposition the foreground row shows all at once (input · process · result · usage):
 
 - **Background subagent_delegate row = input only.** Collapsed: `▶ sub-1 <task first line>`. Expanded: plus `@file` references, context size, and the full task text. Static — the run progresses invisibly until a subagent_wait/subagent_check row picks it up.
-- **subagent_wait row = process + usage.** One block per watched run: status line (`⏸ queued / ⏳ running` + id + task preview; bare, icon-free once terminal), a live activity stream (collapsed keeps the latest 5 items with a leading ellipsis; expanded shows everything) and a ticking usage bar. Once a run finishes, its process stream is replaced by a **status-only** result line (`✓ finished`, or `✗ <reason>`) — the output itself never appears in a subagent_wait row; expanded keeps the full process stream instead. A timed-out wait freezes the view.
-- **subagent_check row = the result view.** Same block shape as subagent_wait's single-run view (no id — there is only one), but the result line shows `✓ <AI summary>` and the expanded view renders the **full output** — subagent_check is where the conclusion lives.
+- **subagent_wait row = process + usage.** One block per watched run: status line (`⏸ queued / ⏳ running` + id + task preview; bare, icon-free once terminal), a live activity stream (collapsed keeps the latest 5 items with a leading ellipsis; expanded shows everything) and a ticking usage bar. Once a run finishes, its process stream is replaced by a **status-only** result line (`✓ finished` / `⏲ budget-exceeded with the reason` / `✗ <reason>`) — the output itself never appears in a subagent_wait row; expanded keeps the full process stream instead. A timed-out wait freezes the view.
+- **subagent_check row = the result view.** Same block shape as subagent_wait's single-run view (no id — there is only one), but the result line shows `✓ <AI summary>` (or the budget/failure reason when the run stopped early) and the expanded view renders the **full output** — subagent_check is where the conclusion lives.
 
 ### Passing context and reference files
 
@@ -247,7 +247,7 @@ Each path is injected as an independent `@file` attachment the subagent reads di
 
 ### Budget enforcement
 
-`maxTurns` / `maxCost` cap a run. When exceeded, the child is killed and the last completed output is returned with `stopReason: "budget_exceeded"` (shown in the expanded TUI). Defaults are unlimited (`0`); set global defaults in config or per-role overrides in `agentOverrides`. Negative values are normalized to `0`.
+`maxTurns` / `maxCost` cap a run. When exceeded, the child is killed and the last completed output is returned with `stopReason: "budget_exceeded"`. Budget stops are **intentional successes** — the output is partial but valid: the TUI marks the run with a ⏲ line stating the reason, `subagent_wait` reports `succeeded (budget exceeded — output is partial)`, and the tool result (and `subagent_check`) append a `--- Budget exceeded (...) ---` note so the model knows to treat the output as partial. Defaults are unlimited (`0`); set global defaults in config or per-role overrides in `agentOverrides`. Negative values are normalized to `0`.
 
 ### Oversized outputs
 
@@ -255,7 +255,7 @@ When a run's output exceeds the size limit (50,000 chars), pi-subagent first tri
 
 ### Fallback observability
 
-When a provider error (429, quota, timeout, ...) kills a run and the whole task is retried on the role's `fallbackRole`, the retry no longer hides the failure. The first attempt's model, stop reason, error message, and a stderr tail are snapshotted into `fallbackFrom` and surfaced everywhere: a `⚠ fallback:` line in the TUI (collapsed and expanded, including while the retry runs), a `--- fallback: ... ---` note in the tool result the main model reads (on success and failure alike), and a `fallbackFrom` field in the history file. When the child dies before its first message (e.g. an instant 429), the reason is recovered from stderr and the model name from what the parent requested.
+When a provider error (429, quota, timeout, ...) kills a run and the whole task is retried on the role's `fallbackRole`, the retry no longer hides the failure. The first attempt's model, stop reason, error message, and a stderr tail are snapshotted into `fallbackFrom` and surfaced everywhere: a `⚠ fallback:` line in the TUI (collapsed and expanded, including while the retry runs), a `--- fallback: ... ---` note in the tool result the main model reads (on success and failure alike — foreground delegate results and `subagent_check` snapshots), and a `fallbackFrom` field in the history file. When the child dies before its first message (e.g. an instant 429), the reason is recovered from stderr and the model name from what the parent requested.
 
 ### Run history
 

@@ -12,7 +12,7 @@ export interface SubagentConfig {
   maxTurns: number;
   /** Default cumulative cost budget in USD. `0` means unlimited; negative values are normalized to `0`. Per-role maxCost overrides this. */
   maxCost: number;
-  /** Persist each delegate run to ~/.pi/subagent/history/{sessionId}/{id}.json for auditing. */
+  /** Persist each delegate run to ~/.pi/subagent/history/{sessionId}/{toolCallId}.json for auditing. */
   history: SubagentHistoryConfig;
   summary: SubagentSummaryConfig;
   /**
@@ -64,7 +64,7 @@ export interface SubagentRole {
   maxTurns?: number;
   /** Max cumulative cost in USD. `0` means unlimited; negative values are normalized to `0`. */
   maxCost?: number;
-  /** Fallback pi-model-roles role name when this role's model is unavailable (provider error). Defaults to "default". */
+  /** Fallback pi-model-roles role name to retry the whole run on when this role's model hits a provider error. Unset = no retry (the failure stands). */
   fallbackRole?: string;
 }
 
@@ -93,7 +93,7 @@ export interface SubagentUsage {
   turns: number;
 }
 
-/** A message from the subagent's JSON event stream. */
+/** A message from the child's JSON event stream (parsed for usage/output extraction). */
 export interface SubagentMessage {
   role: string;
   content: Array<{
@@ -129,8 +129,6 @@ export interface SubagentResult {
   queued?: boolean;
   /** How `output` was prepared for display: raw, compressed by summary model, or mechanically truncated. */
   outputMethod?: "raw" | "compressed" | "truncated";
-  /** All messages from the event stream (assistant + tool results) */
-  messages: SubagentMessage[];
   /** Last assistant text output */
   output: string;
   /** AI-generated one-line summary for TUI display */
@@ -179,9 +177,8 @@ export interface FallbackFrom {
   stderrTail?: string;
 }
 
-/** TUI details structure passed via tool result details. */
+/** TUI details for a foreground delegate tool result/update: one result per call. */
 export interface SubagentDetails {
-  mode: "single";
   results: SubagentResult[];
 }
 

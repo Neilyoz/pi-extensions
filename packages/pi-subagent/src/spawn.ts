@@ -1,9 +1,10 @@
 /**
  * Spawn a pi child process and collect structured output with real-time progress.
  *
- * Uses pi's --mode json to get a JSON event stream.
- * Collects all messages (assistant + tool results) for TUI rendering.
- * Fires onProgress on each event for streaming updates.
+ * Uses pi's --mode json to get a JSON event stream. Fires onProgress on each
+ * event for streaming TUI updates; the message stream is parsed for
+ * usage/output extraction, with thinking blocks and tool calls mirrored into
+ * the activity log for rendering.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -134,7 +135,9 @@ export async function spawnSubagent(
     subagentRoles?: string[];
     timeoutMs?: number;
     depth?: number;
+    /** Kill after this many assistant turns; 0/undefined = unlimited (negatives normalize to 0). */
     maxTurns?: number;
+    /** Kill after this cumulative cost in USD; 0/undefined = unlimited (negatives normalize to 0). */
     maxCost?: number;
     signal?: AbortSignal;
     onProgress?: (update: Partial<SubagentResult>) => void;
@@ -144,7 +147,6 @@ export async function spawnSubagent(
     role: "",
     task,
     exitCode: 0,
-    messages: [],
     output: "",
     stderr: "",
     usage: {
@@ -264,7 +266,6 @@ export async function spawnSubagent(
     const emitProgress = () => {
       options.onProgress?.({
         output: result.output,
-        messages: [...result.messages],
         usage: { ...result.usage },
         model: result.model,
         stopReason: result.stopReason,
@@ -278,13 +279,16 @@ export async function spawnSubagent(
     // O(1) lookup from toolCallId → activityLog index.
     const toolCallIndex = new Map<string, number>();
 
+    // Normalized turn/cost budgets (0 = unlimited). Role overrides can arrive
+    // raw from settings.json, so negatives/non-finites normalize here.
+    const maxTurns = Number.isFinite(options.maxTurns) ? Math.max(0, options.maxTurns ?? 0) : 0;
+    const maxCost = Number.isFinite(options.maxCost) ? Math.max(0, options.maxCost ?? 0) : 0;
+
     // Kill the child when the configured turn/cost budget is exceeded.
     // Called after each assistant message_end (usage already accumulated).
     const checkBudget = () => {
-      const mt = Number.isFinite(options.maxTurns) ? Math.max(0, options.maxTurns ?? 0) : 0;
-      const mc = Number.isFinite(options.maxCost) ? Math.max(0, options.maxCost ?? 0) : 0;
       if (budgetExceeded || wasTimeout) return;
-      if ((mt > 0 && result.usage.turns >= mt) || (mc > 0 && result.usage.cost >= mc)) {
+      if ((maxTurns > 0 && result.usage.turns >= maxTurns) || (maxCost > 0 && result.usage.cost >= maxCost)) {
         budgetExceeded = true;
         killProc("budget");
       }
@@ -301,7 +305,6 @@ export async function spawnSubagent(
 
       if (event.type === "message_end" && event.message) {
         const msg = event.message as SubagentMessage;
-        result.messages.push(msg);
 
         if (msg.role === "assistant") {
           result.usage.turns++;
@@ -395,14 +398,13 @@ export async function spawnSubagent(
       }
     };
 
-    // Build env with optional subagent allowlist and tmpdir for researcher role
+    // Child env: the role allowlist for nested delegation, the shared scratch
+    // tmpdir for subagent bash work (e.g. git clone), and the nesting depth.
     const childEnv: NodeJS.ProcessEnv = { ...process.env };
     if (options.subagentRoles && options.subagentRoles.length > 0) {
       childEnv.PI_SUBAGENT_ALLOWED = options.subagentRoles.join(",");
     }
-    // Expose tmpdir as env var so subagent bash commands (e.g. git clone) can use it
     childEnv.PI_SUBAGENT_TMPDIR = tmpDir;
-    // Propagate nesting depth so child delegate calls can bound recursion
     childEnv.PI_SUBAGENT_DEPTH = String(options.depth ?? 0);
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -427,9 +429,8 @@ export async function spawnSubagent(
       else if (reason === "budget") {
         result.stopReason = "budget_exceeded";
         // Human-readable so the caller/TUI never falls back to raw stderr noise.
-        const mt = Number.isFinite(options.maxTurns) ? Math.max(0, options.maxTurns ?? 0) : 0;
         const why =
-          mt > 0 && result.usage.turns >= mt
+          maxTurns > 0 && result.usage.turns >= maxTurns
             ? `${result.usage.turns} turns`
             : `$${result.usage.cost.toFixed(4)}`;
         result.errorMessage = `Budget exceeded (${why}; partial output returned)`;
@@ -567,8 +568,7 @@ export async function spawnSubagent(
 
     result.exitCode = exitCode;
     if (wasAborted) throw new Error("Subagent was aborted");
-    // NOTE: large outputs are kept raw here — compression/truncation happens in
-    // the extension layer (index.ts) so the summary model can compress first.
+    // Large outputs stay raw here — compression/summary run in the engine (run.ts).
   } finally {
     // Cleanup temp directory and all contents
     if (tmpDir)

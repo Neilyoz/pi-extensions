@@ -4,7 +4,7 @@
  */
 
 import test from "node:test";
-import assert from "node:assert";
+import assert from "node:assert/strict";
 import type { ModelRolesAPI } from "@d3ara1n/pi-model-roles";
 import type { SubagentConfig, SubagentRole, SubagentResult } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
@@ -38,7 +38,6 @@ function makeResult(overrides: Partial<SubagentResult>): SubagentResult {
     role: "explorer",
     task: "test task",
     exitCode: 0,
-    messages: [],
     output: "",
     stderr: "",
     usage: emptyUsage(),
@@ -86,6 +85,8 @@ test("run starts queued, transitions to running, then succeeds", async () => {
   assert.strictEqual(run.state, "succeeded");
   assert.strictEqual(run.result, result);
   assert.strictEqual(result.output, "done");
+  // Terminal frames carry the registry role name (spawn itself never learns it).
+  assert.strictEqual(result.role, "explorer");
   assert.ok(states.includes("running"), `saw running in ${JSON.stringify(states)}`);
   assert.strictEqual(run.thrown, undefined);
   // Terminal frame carries elapsed time and stops looking live.
