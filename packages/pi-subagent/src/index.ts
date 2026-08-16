@@ -188,12 +188,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
     applyAgentOverrides(availableRoles, config.agentOverrides);
 
     // Validate custom roles (skip built-in roles — they already have all fields)
+    // `tools` is optional — absent means the role gets all tools.
     const REQUIRED_FIELDS = [
       "role",
       "description",
       "examples",
       "decisionTrigger",
-      "tools",
       "systemPrompt",
     ] as const;
     for (const [name, role] of Object.entries(availableRoles)) {

@@ -2,7 +2,8 @@
  * Built-in subagent role definitions.
  *
  * Each maps to a pi-model-roles role and has a tailored system prompt
- * and tool set. Prompts are in English — concise, efficient, task-focused.
+ * and tool policy (an explicit allowlist, or all tools when unset).
+ * Prompts are in English — concise, efficient, task-focused.
  * Final output should be accurate and concise, stating conclusions directly.
  */
 
@@ -56,10 +57,9 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
     role: "default",
     timeout: 2400,
     description:
-      "the ONLY role that can MODIFY files — edit, write, refactor, fix, implement. Tools: read, bash, edit, write, grep, find, subagent_delegate. Can delegate to explorer/researcher.",
+      "Full tool access — the ONLY role that can MODIFY files (edit, write, refactor, fix, implement). Can delegate to explorer/researcher.",
     examples: ["Rename all snake_case fields to camelCase", "Add input validation to POST /login"],
     decisionTrigger: "Task modifies files?",
-    tools: ["read", "bash", "edit", "write", "grep", "find", "subagent_delegate"],
     subagentRoles: ["explorer", "researcher"],
     systemPrompt: [
       "Implementation worker. Work autonomously — all context is in the task description.",
@@ -67,10 +67,12 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
       "After each change, validate: run tests, check syntax, verify behavior.",
       "",
       "## Protecting your context",
-      "You have a `subagent_delegate` tool. Use it to offload exploration and research:",
+      "You have full tool access (web_search, fetch_content, MCP, ...) plus a `subagent_delegate` tool.",
+      "Use direct tools for quick lookups — e.g. check library docs/APIs with web_search or context7 before writing third-party code.",
+      "Delegate only when the work is substantial:",
       "- subagent_delegate(role=explorer) when you need to map unfamiliar code before editing",
-      "- subagent_delegate(role=researcher) when you need external docs or library references",
-      "Don't delegate tasks you can do with a single read or grep.",
+      "- subagent_delegate(role=researcher) when the research itself is a multi-step investigation",
+      "Don't delegate tasks you can do with a single read, grep, or web search.",
       "",
       "Output format (be brief — summarize, don't paste full diffs):",
       "## Changes: list each file touched and what changed",
@@ -82,22 +84,34 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
     fallbackRole: "default",
     timeout: 2400,
     description:
-      "the ONLY role with WEB ACCESS — search docs, fetch pages, analyze GitHub repos. Tools: web_search, fetch_content, read, bash, subagent_delegate. Can clone repos & delegate to explorer.",
+      "the ONLY role with WEB ACCESS — search docs, fetch pages, verify claims, analyze GitHub repos. Can clone repos & delegate to explorer.",
     examples: ["Find the React 19 migration guide", "Check GitHub issue #1234 for context"],
     decisionTrigger: "Task searches web or GitHub?",
-    tools: ["web_search", "fetch_content", "read", "bash", "subagent_delegate"],
+    tools: [
+      "web_search",
+      "fetch_content",
+      "source_check",
+      "get_search_content",
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "subagent_delegate",
+    ],
     subagentRoles: ["explorer"],
     systemPrompt: [
       "Web researcher. Search with varied angles, prefer official docs over blogs.",
       "If first results are insufficient, refine queries and search again.",
       "",
+      "## Research artifacts",
+      "You may write files (downloaded docs, notes, intermediate results) — but ONLY under $PI_SUBAGENT_TMPDIR.",
+      "Never write anywhere else: project files and other directories are strictly off-limits.",
+      "",
       "## GitHub repo analysis",
       "When the task requires analyzing a GitHub repo:",
-      "1. git clone the repo into PI_SUBAGENT_TMPDIR (must exist)",
+      "1. Clone the repo into $PI_SUBAGENT_TMPDIR",
       "2. Use `subagent_delegate` with role=explorer to investigate the cloned codebase — pass the repo path and the research question",
       "3. Combine explorer findings with any web search results",
-      "",
-      "bash is for git clone and read-only commands only. Never modify files.",
       "",
       "Output format:",
       "## Answer: direct answer to the question (2-3 sentences)",

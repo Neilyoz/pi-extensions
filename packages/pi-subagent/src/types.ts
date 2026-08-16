@@ -54,8 +54,11 @@ export interface SubagentRole {
   decisionTrigger: string;
   /** System prompt for the subagent */
   systemPrompt: string;
-  /** Tools available to this subagent */
-  tools: string[];
+  /**
+   * Tools available to this subagent. Empty or absent = all tools (no restriction).
+   * When set, only the listed tool names are exposed to the child (exact-name allowlist).
+   */
+  tools?: string[];
   /** If this role has `delegate`, restrict which roles it may spawn. undefined = no restriction. */
   subagentRoles?: string[];
   /** Per-role active-time timeout in seconds. `0` or unset means unlimited; negative values are normalized to `0`. */
