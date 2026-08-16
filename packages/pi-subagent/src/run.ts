@@ -48,7 +48,7 @@ export interface RunHandle {
   readonly snapshot: SubagentResult;
   /** Terminal result; undefined while queued/running. */
   readonly result: SubagentResult | undefined;
-  /** Set when the pipeline threw (abort, spawn crash). Foreground callers rethrow; wait/check only see state "failed". */
+  /** Set when the pipeline threw (abort, spawn crash). The terminal result still carries the partial frame — callers report it as an ordinary failed result; wait/check only see state "failed". */
   readonly thrown: Error | undefined;
   /** Resolves with the terminal result once the run finishes (always succeeds). */
   readonly promise: Promise<SubagentResult>;
@@ -164,8 +164,8 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
     try {
       await opts.gate.acquire(opts.signal);
     } catch {
-      const msg = `Subagent (${opts.role}) was cancelled while queued.`;
-      finish({ ...inputFrame(1, false), errorMessage: msg }, new Error("cancelled while queued"));
+      const msg = "cancelled while queued for a concurrency slot";
+      finish({ ...inputFrame(1, false), errorMessage: msg }, new Error(msg));
       return;
     }
 

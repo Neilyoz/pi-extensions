@@ -45,11 +45,11 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
   const isRunning = !!details?.results[0] && details.results[0].exitCode === -1;
 
   // Tick elapsed time every second while running; stop once terminal.
-  // Placed BEFORE the empty-results early return so every terminal path
-  // (abort, model-resolution failure, catch) still clears the timer —
-  // otherwise the interval leaks a permanent 1 Hz re-render per aborted run.
-  // The timer calls context.invalidate() so the render recomputes elapsed
-  // time fresh from Date.now() without dirtying the data layer.
+  // Placed BEFORE the missing-details early return so every terminal path
+  // still clears the timer — otherwise the interval leaks a permanent
+  // 1 Hz re-render per row. The timer calls context.invalidate() so the
+  // render recomputes elapsed time fresh from Date.now() without dirtying
+  // the data layer.
   if (isRunning) {
     ensureElapsedTimer(context);
   } else {

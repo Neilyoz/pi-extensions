@@ -123,7 +123,11 @@ test("non-zero exit yields state failed without thrown", async () => {
 });
 
 test("a throwing spawn resolves the promise with a failed result carrying the error", async () => {
-  const spawnImpl: SpawnImpl = async () => {
+  const spawnImpl: SpawnImpl = async (_m, _t, options) => {
+    options.onProgress?.({
+      output: "partial",
+      activityLog: [{ kind: "toolCall", id: "t1", status: "done", toolName: "read", args: {} }],
+    });
     throw new Error("Subagent was aborted");
   };
 
@@ -134,6 +138,10 @@ test("a throwing spawn resolves the promise with a failed result carrying the er
   assert.ok(run.thrown instanceof Error);
   assert.strictEqual(run.thrown.message, "Subagent was aborted");
   assert.strictEqual(result.errorMessage, "Subagent was aborted");
+  // The partial frame survives — the foreground path renders aborts like any
+  // failure (task line + activity + result line) instead of a bare error.
+  assert.strictEqual(result.output, "partial");
+  assert.strictEqual(result.activityLog.length, 1);
 });
 
 test("provider error on first attempt retries on the fallback role", async () => {

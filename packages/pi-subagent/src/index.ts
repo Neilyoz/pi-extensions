@@ -345,14 +345,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
       try {
         const result = await run.promise;
 
-        // Pipeline throws (abort, spawn crash) surface as tool errors. The
-        // empty-results frame keeps the TUI on the plain-content fallback.
-        if (run.thrown) {
-          const errorText = `Subagent (${params.role}) error: ${run.thrown.message || run.thrown}`;
-          emit([], errorText);
-          throw new Error(errorText);
-        }
-
         // Fallback note: the main model must know the answer came from the
         // fallback model, not the role's primary — on success AND failure.
         // Budget note: budget stops are intentional successes, but the model
@@ -360,6 +352,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
         const fallbackNote = formatFallbackNote(result);
         const budgetNote = formatBudgetNote(result);
 
+        // Aborts and spawn crashes arrive here too: the engine resolves them
+        // into failed results that keep the partial frame (task, activity,
+        // output, usage), so the TUI renders them like any failure instead
+        // of collapsing to a bare error line.
         if (isFailedResult(result)) {
           const failedText =
             `Subagent (${params.role}) failed: ${result.errorMessage || result.stderr || "unknown error"}\n\nPartial output:\n${result.output}` +
