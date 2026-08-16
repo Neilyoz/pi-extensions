@@ -81,6 +81,8 @@ export interface StartRunOptions {
   getSessionId?: () => string | undefined;
   /** @internal — injectable spawn for tests. */
   spawnImpl?: typeof spawnSubagent;
+  /** @internal — injectable history persistence for tests. */
+  persistImpl?: typeof persistSubagentHistory;
 }
 
 export function startSubagentRun(opts: StartRunOptions): RunHandle {
@@ -168,6 +170,22 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
       finish({ ...inputFrame(1, false), errorMessage: msg }, new Error(msg));
       return;
     }
+
+    // Audit every spawned run — finished, failed, and aborted alike: an
+    // aborted run already consumed tokens, so its cost must stay in the
+    // audit log. Pre-run failures (queued-cancel, role/model resolution)
+    // never spawned and are not recorded.
+    const persist = opts.persistImpl ?? persistSubagentHistory;
+    const persistHistory = (terminal: SubagentResult, rawOutput?: string): void => {
+      if (!opts.config.history.enabled) return;
+      let sessionId: string | undefined;
+      try {
+        sessionId = opts.getSessionId?.();
+      } catch {
+        /* ignore */
+      }
+      persist(sessionId, opts.toolCallId, opts.role, opts.task, terminal, rawOutput);
+    };
 
     try {
       // Resolve the model AFTER acquiring so the queued period stays zero-cost.
@@ -312,37 +330,30 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         runResult.summary = await generateSummary(rolesApi, runResult.output, opts.config.summary);
       }
 
-      // Persist audit record (best-effort; covers both success and failure).
-      // History keeps the raw original output even when LLM/TUI saw a compressed/truncated version.
-      if (opts.config.history.enabled) {
-        let sessionId: string | undefined;
-        try {
-          sessionId = opts.getSessionId?.();
-        } catch {
-          /* ignore */
-        }
-        persistSubagentHistory(sessionId, opts.toolCallId, opts.role, opts.task, runResult, rawOutput);
-      }
+      // Best-effort audit record. The raw original output is kept even when
+      // the LLM/TUI saw a compressed/truncated version.
+      persistHistory(runResult, rawOutput);
 
       finish(runResult);
     } catch (err: any) {
       // Keep whatever the last live frame gathered so aborted/crashed runs
       // still show their partial activity and usage.
       const partial = snapshot;
-      finish(
-        {
-          ...inputFrame(1, false),
-          output: partial.output,
-          usage: partial.usage,
-          model: partial.model,
-          stopReason: partial.stopReason,
-          activityLog: partial.activityLog,
-          budgetMs: partial.budgetMs,
-          elapsedMs: partial.startTime ? Date.now() - partial.startTime : undefined,
-          errorMessage: err?.message || String(err),
-        },
-        err instanceof Error ? err : new Error(String(err)),
-      );
+      const terminal: SubagentResult = {
+        ...inputFrame(1, false),
+        output: partial.output,
+        usage: partial.usage,
+        model: partial.model,
+        stopReason: partial.stopReason,
+        activityLog: partial.activityLog,
+        budgetMs: partial.budgetMs,
+        elapsedMs: partial.startTime ? Date.now() - partial.startTime : undefined,
+        errorMessage: err?.message || String(err),
+      };
+      // The run spawned before throwing — audit it like any terminal state.
+      // The partial output is raw (compression never ran on it).
+      persistHistory(terminal);
+      finish(terminal, err instanceof Error ? err : new Error(String(err)));
     } finally {
       opts.gate.release();
     }

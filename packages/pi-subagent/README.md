@@ -260,7 +260,7 @@ When a provider error (429, quota, timeout, ...) kills a run and the whole task 
 
 ### Run history
 
-Every completed delegate run is written (best-effort) to `~/.pi/subagent/history/{sessionId}/{toolCallId}.json`, recording role, task, usage, activity log, the **full raw output** (even when the main model saw a compressed/truncated version), and the `fallbackFrom` snapshot when the run was retried on the fallback role. Useful for auditing what subagents did and how much they cost. Disable with `history.enabled: false`.
+Every **spawned** delegate run is written (best-effort) to `~/.pi/subagent/history/{sessionId}/{toolCallId}.json` — finished, failed, and aborted alike (an aborted run already consumed tokens, so its partial activity and cost stay auditable). Records cover role, task, usage, activity log, the **full raw output** (even when the main model saw a compressed/truncated version), and the `fallbackFrom` snapshot when the run was retried on the fallback role. Runs that never spawned (cancelled while queued, role/model resolution failures) are not recorded. Useful for auditing what subagents did and how much they cost. Disable with `history.enabled: false`.
 
 ## License
 

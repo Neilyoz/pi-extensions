@@ -12,7 +12,7 @@ export interface SubagentConfig {
   maxTurns: number;
   /** Default cumulative cost budget in USD. `0` means unlimited; negative values are normalized to `0`. Per-role maxCost overrides this. */
   maxCost: number;
-  /** Persist each delegate run to ~/.pi/subagent/history/{sessionId}/{toolCallId}.json for auditing. */
+  /** Persist every spawned delegate run (finished/failed/aborted alike) to ~/.pi/subagent/history/{sessionId}/{toolCallId}.json for auditing. Pre-run failures that never spawned are not recorded. */
   history: SubagentHistoryConfig;
   summary: SubagentSummaryConfig;
   /**

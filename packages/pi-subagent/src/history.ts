@@ -1,9 +1,13 @@
 /**
  * History persistence for pi-subagent delegate runs.
  *
- * Best-effort audit log: writes one JSON record per delegate run under
- * ~/.pi/subagent/history/{sessionId}/{toolCallId}.json. Never throws — persistence
- * must not fail the delegation. Privacy parity with pi's own session files.
+ * Best-effort audit log: writes one JSON record per *spawned* delegate run —
+ * finished, failed, and aborted alike (an aborted run already consumed
+ * tokens, so its partial activity and cost stay auditable). Pre-run failures
+ * that never spawned (queued-cancel, role/model resolution) are not recorded.
+ * Records land under ~/.pi/subagent/history/{sessionId}/{toolCallId}.json.
+ * Never throws — persistence must not fail the delegation. Privacy parity
+ * with pi's own session files.
  */
 
 import * as os from "node:os";

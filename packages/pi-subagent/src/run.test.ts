@@ -144,6 +144,63 @@ test("a throwing spawn resolves the promise with a failed result carrying the er
   assert.strictEqual(result.activityLog.length, 1);
 });
 
+test("spawned runs persist to history on every terminal path; pre-run failures do not", async () => {
+  const persisted: SubagentResult[] = [];
+  const persistImpl = (
+    _sessionId: string | undefined,
+    _toolCallId: string,
+    _role: string,
+    _task: string,
+    r: SubagentResult,
+  ) => {
+    persisted.push(r);
+  };
+  const historyConfig = { ...testConfig, history: { enabled: true } };
+
+  // Abort mid-run: the run spawned, so it must be audited.
+  const aborted = startSubagentRun(
+    makeDeps({
+      config: historyConfig,
+      spawnImpl: async (_m, _t, options) => {
+        options.onProgress?.({
+          output: "partial",
+          activityLog: [{ kind: "toolCall", id: "t1", status: "running", toolName: "bash", args: {} }],
+        });
+        throw new Error("Subagent was aborted");
+      },
+      persistImpl,
+    }),
+  );
+  await aborted.promise;
+  assert.equal(persisted.length, 1);
+  assert.match(persisted[0].errorMessage!, /aborted/);
+  assert.equal(persisted[0].activityLog.length, 1);
+
+  // Pre-run failure (roles api unavailable): never spawned, not audited.
+  const prerun = startSubagentRun(
+    makeDeps({
+      config: historyConfig,
+      getRolesApi: () => {
+        throw new Error("not initialized");
+      },
+      persistImpl,
+    }),
+  );
+  await prerun.promise;
+  assert.equal(persisted.length, 1);
+
+  // Normal success is audited too.
+  const ok = startSubagentRun(
+    makeDeps({
+      config: historyConfig,
+      spawnImpl: async () => makeResult({ output: "done" }),
+      persistImpl,
+    }),
+  );
+  await ok.promise;
+  assert.equal(persisted.length, 2);
+});
+
 test("provider error on first attempt retries on the fallback role", async () => {
   const calls: string[] = [];
   const spawnImpl: SpawnImpl = async (model) => {
