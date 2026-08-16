@@ -32,8 +32,8 @@ This means:
 
 | Role | Model Role | Timeout | Tools | Can Delegate To | Description |
 |------|-----------|---------|-------|-----------------|-------------|
-| `explorer` | fast | 900s | read, find, grep | — | Fast code search (read-only, no bash) |
-| `reviewer` | heavy | 3600s | read, bash, grep, find | — | Deep code review (read-only, bash for git/log) |
+| `explorer` | fast | 900s | read, find, grep | — | Fast code exploration (read-only) |
+| `reviewer` | heavy | 3600s | read, bash, grep, find | — | Deep code review, runs git/tests for evidence (read-only) |
 | `worker` | default | 2400s | all (no whitelist) | explorer, researcher | Implementation — the only role that can modify files; full tool access (web, MCP, everything) |
 | `researcher` | fast | 2400s | web_search, fetch_content, source_check, get_search_content, read, bash, edit, write, delegate | explorer | Web research + GitHub repo analysis; writes artifacts only inside its temp dir |
 
@@ -126,7 +126,7 @@ Override, disable, or add subagent roles via `agentOverrides`. Built-in and cust
       },
       "tester": {
         "role": "default",
-        "description": "Test automation & QA — write and run tests, validate fixes. Tools: read, bash, edit, write, grep. Can delegate to explorer.",
+        "description": "Test automation & QA — write and run tests, validate fixes. Can delegate to explorer.",
         "examples": [
           "Write unit tests for the auth module",
           "Run the test suite and fix failing tests"
