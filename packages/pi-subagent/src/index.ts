@@ -16,7 +16,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
-import type { SubagentConfig, SubagentResult, SubagentRole } from "./types.ts";
+import type {
+  CollectedRun,
+  SubagentConfig,
+  SubagentResult,
+  SubagentRole,
+} from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { loadSubagentConfig } from "./config.ts";
 import { BUILTIN_ROLES } from "./roles.ts";
@@ -37,6 +42,7 @@ import {
   taskPreview,
 } from "./utils.ts";
 import { startSubagentRun, type RunHandle } from "./run.ts";
+import { buildInboxReminder, injectReminder } from "./reminder.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
 import {
   renderBackgroundDelegateCall,
@@ -88,10 +94,14 @@ export default function subagentExtension(pi: ExtensionAPI) {
   refreshAvailableRoles();
 
   // ── Background run registry ────────────────────────────────────
-  // Process-lifetime map of background runs. Foreground delegate runs are NOT
-  // registered — their lifecycle is the tool call itself. Cleared never: ids
-  // must stay resolvable so check can fetch results long after wait returned.
+  // Process-lifetime map of unclaimed background runs (queued, running, and
+  // finished/failed alike). Foreground delegate runs are NOT registered —
+  // their lifecycle is the tool call itself. subagent_check on a terminal run
+  // collects it: the handle is freed and a lightweight CollectedRun tombstone
+  // takes its place, so ids stay resolvable while memory does not grow with
+  // full results.
   const backgroundRuns = new Map<string, RunHandle>();
+  const collectedRuns = new Map<string, CollectedRun>();
   let runCounter = 0;
 
   // Mutable guidelines array — rebuilt in session_start to reflect agentOverrides
@@ -115,10 +125,8 @@ export default function subagentExtension(pi: ExtensionAPI) {
     guidelines.push(
       "WHEN TO DELEGATE — offload substantial work when you only need the result:",
       "",
-      "- Delegate ONLY when a task involves significant work (heavy analysis, multi-step investigation, large-scope changes) AND you only care about the conclusion, not intermediate steps.",
-      "- DO NOT delegate simple tasks: a single read, a one-line edit, a basic grep. Just do them yourself.",
-      "- DO NOT delegate straightforward file modifications touching 1-2 files. Use edit/write directly.",
-      "- Delegation has overhead (spawning a child process). Reserve it for tasks that would genuinely clutter your context with 3+ turns of raw tool output.",
+      "- Delegate ONLY when a task involves significant work (heavy analysis, multi-step investigation, large-scope changes) AND you only care about the conclusion, not intermediate steps. A good test: the task would clutter your context with 3+ turns of raw tool output.",
+      "- DO NOT delegate simple tasks — a single read, a one-line edit, a basic grep, or straightforward changes touching 1-2 files. Just do them yourself; spawning a child process costs more than the task.",
       "",
       "AVAILABLE ROLES:",
       ...entries.map(([name, role]) => `  - ${name}: ${role.description}`),
@@ -132,17 +140,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
       ...exampleLines,
       "",
       "For multiple independent substantial tasks, emit multiple subagent_delegate calls in one turn — they run in parallel.",
-      "Subagents have no access to this conversation — everything they need must come through `task`, `context`, and `files`.",
-      'Pass reference files via the `files` parameter (e.g. files: ["src/auth.ts"]) instead of pasting their contents into `context` — the subagent reads them directly without consuming your context window.',
-      "Override the model per-call with the `model` parameter for one-off vision or model-specific jobs.",
       "",
       "BACKGROUND DELEGATION — start runs now, collect results later:",
       "",
-      "- subagent_delegate(background: true) starts a run and returns immediately with just an id (sub-N). The run is unaffected by turn cancellation.",
-      "- After starting background runs, keep working (or start more); then subagent_wait(ids) blocks until every listed run reaches a final state (omit ids to wait for all of them).",
-      "- subagent_wait returns ONLY each run's status (finished/failed, one `id (role): status` line per run) — it never returns results. With timeout_ms it errors if anything is still unfinished.",
-      "- subagent_check(id) is the result-fetcher: for a finished run it returns the full output; mid-run it returns a snapshot (queued/running + current activity). One id per call — results can be large.",
-      "- Typical flow: subagent_delegate(background: true) ×N → work on something else → subagent_wait([id1, id2, ...]) → subagent_check(id) for each finished run.",
+      "- Typical flow: subagent_delegate(background: true) ×N → keep working → subagent_wait(ids) to block until every listed run finishes (omit ids to wait for all) → subagent_check(id) for each finished run.",
+      "- A terminal check collects the run — the output is returned once and the run leaves the registry. Mid-run checks are free: peek at progress as often as you like; only terminal checks collect.",
+      "- Every LLM call carries a [background subagent runs] reminder listing your unclaimed runs (queued, running, and finished-but-unchecked alike). Runs missing from that list were already collected.",
       "- Background delegation works only in the top-level session.",
     );
   }
@@ -198,6 +201,15 @@ export default function subagentExtension(pi: ExtensionAPI) {
     rebuildGuidelines(availableRoles);
   });
 
+  pi.on("context", async (event) => {
+    // The model's inbox: every unclaimed background run, injected at a
+    // cache-stable head position before every provider call. Empty inbox →
+    // zero injection (context untouched, cache fully stable).
+    const reminder = buildInboxReminder(backgroundRuns.values());
+    if (!reminder) return;
+    return { messages: injectReminder(event.messages, reminder) };
+  });
+
   pi.on("tool_result", (event) => {
     if (event.toolName === "subagent_delegate" && hasFailedSubagentResult(event.details)) {
       return { isError: true };
@@ -236,7 +248,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       background: Type.Optional(
         Type.Boolean({
           description:
-            "Run asynchronously: returns an id (sub-N) immediately instead of blocking. Then subagent_wait(ids) to await completion and subagent_check(id) to fetch each result. The run survives turn cancellation.",
+            "Run asynchronously: returns an id (sub-N) immediately instead of blocking. The run survives turn cancellation.",
         }),
       ),
       cwd: Type.Optional(Type.String({ description: "Working directory (defaults to current)" })),
@@ -431,10 +443,17 @@ export default function subagentExtension(pi: ExtensionAPI) {
       }
       const unknown = ids.filter((id) => !backgroundRuns.has(id));
       if (unknown.length > 0) {
-        const known = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
-        throw new Error(
-          `Unknown subagent id(s): ${unknown.join(", ")}. Known: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
-        );
+        const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
+        const collectedNotes = unknown
+          .filter((id) => collectedRuns.has(id))
+          .map((id) => `${id} was already collected (result is in your history)`);
+        const trulyUnknown = unknown.filter((id) => !collectedRuns.has(id));
+        const parts = [
+          `Unknown subagent id(s): ${trulyUnknown.length > 0 ? trulyUnknown.join(", ") : "(none)"}.`,
+          collectedNotes.length > 0 ? `${collectedNotes.join("; ")}.` : "",
+          `Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
+        ].filter(Boolean);
+        throw new Error(parts.join(" "));
       }
       const runs = ids.map((id) => backgroundRuns.get(id)!);
       const timeoutMs =
@@ -538,7 +557,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_check",
     label: "Check a background subagent",
     description:
-      "Get an instant snapshot of ONE background subagent run: queued / running (with current activity) / finished (with the full output as the run result) / failed (with reason and partial output). Does not wait — use subagent_wait for that. One id per call because results can be large.",
+      "Get an instant snapshot of ONE background subagent run: queued / running (with current activity) / finished (with the full output as the run result) / failed (with reason and partial output). Does not wait — use subagent_wait for that. Checking a terminal run collects it: the output is returned once and the run leaves the background registry. One id per call because results can be large.",
     promptSnippet: "Inspect a background subagent run",
     parameters: Type.Object({
       id: Type.String({ description: "Run id returned by a background delegate call" }),
@@ -547,14 +566,34 @@ export default function subagentExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const run = backgroundRuns.get(params.id);
       if (!run) {
-        const known = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
+        const collected = collectedRuns.get(params.id);
+        if (collected) {
+          throw new Error(
+            `${params.id} (${collected.role}) was already collected — its result is in your conversation history. Check the remaining runs or delegate new ones.`,
+          );
+        }
+        const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
         throw new Error(
-          `Unknown subagent id: ${params.id}. Known: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+          `Unknown subagent id: ${params.id}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
         );
       }
 
       // Freeze live frames so the snapshot's elapsed time stays static.
       const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
+
+      // Read-once collection: a terminal check returns the result AND frees
+      // the run — the output now lives in the conversation history, so the
+      // registry keeps only a lightweight tombstone for id resolution.
+      if (run.state === "finished" || run.state === "failed") {
+        backgroundRuns.delete(run.id);
+        collectedRuns.set(run.id, {
+          id: run.id,
+          role: run.role,
+          task: taskPreview(run.task),
+          state: run.state,
+        });
+      }
+
       return {
         content: [{ type: "text", text: formatCheckText(run.id, run.role, snap) }],
         details: { id: run.id, role: run.role, result: snap },
@@ -656,30 +695,40 @@ export default function subagentExtension(pi: ExtensionAPI) {
   pi.registerCommand("subagent:status", {
     description: "List background subagent runs and their current state",
     handler: async (_args, ctx) => {
-      if (backgroundRuns.size === 0) {
+      if (backgroundRuns.size === 0 && collectedRuns.size === 0) {
         ctx.ui.notify("No background runs.", "info");
         return;
       }
       const lines: string[] = [];
-      for (const run of backgroundRuns.values()) {
-        // Freeze live frames so elapsed-dependent details don't drift in the listing.
-        const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
-        let icon: string;
-        let detail: string;
-        if (run.state === "failed") {
-          icon = "\u2717";
-          detail = snap.errorMessage || "unknown error";
-        } else if (run.state === "finished") {
-          icon = "\u2713";
-          detail = snap.summary || taskPreview(snap.output) || "(no output)";
-        } else if (run.state === "queued") {
-          icon = "\u23F8";
-          detail = "queued — waiting for a concurrency slot";
-        } else {
-          icon = "\u23F3";
-          detail = `running — ${describeCurrentActivity(snap)}`;
+      if (backgroundRuns.size > 0) {
+        lines.push("Active:");
+        for (const run of backgroundRuns.values()) {
+          // Freeze live frames so elapsed-dependent details don't drift in the listing.
+          const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
+          let icon: string;
+          let detail: string;
+          if (run.state === "failed") {
+            icon = "\u2717";
+            detail = snap.errorMessage || "unknown error";
+          } else if (run.state === "finished") {
+            icon = "\u2713";
+            detail = snap.summary || taskPreview(snap.output) || "(no output)";
+          } else if (run.state === "queued") {
+            icon = "\u23F8";
+            detail = "queued — waiting for a concurrency slot";
+          } else {
+            icon = "\u23F3";
+            detail = `running — ${describeCurrentActivity(snap)}`;
+          }
+          lines.push(`${icon} ${run.id} (${run.role}): ${detail}`);
         }
-        lines.push(`${icon} ${run.id} (${run.role}): ${detail}`);
+      }
+      if (collectedRuns.size > 0) {
+        if (lines.length > 0) lines.push("");
+        lines.push("Collected (result already returned via subagent_check):");
+        for (const c of collectedRuns.values()) {
+          lines.push(`\u2713 ${c.id} (${c.role}): ${c.state} — "${c.task}"`);
+        }
       }
       ctx.ui.notify(lines.join("\n"), "info");
     },

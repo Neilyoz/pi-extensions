@@ -212,6 +212,15 @@ export interface WaitDetails {
   timedOut?: boolean;
 }
 
+/** Lightweight tombstone kept in the registry after a run's result was claimed via subagent_check — /subagent:status history without the full state machine. */
+export interface CollectedRun {
+  id: string;
+  role: string;
+  /** First-line task preview (same 70-char cap as the inbox reminder). */
+  task: string;
+  state: "finished" | "failed";
+}
+
 /** Details for a check tool result — a frozen one-shot snapshot of a single run. */
 export interface CheckDetails {
   id: string;

@@ -181,7 +181,7 @@ Foreground and background delegation share one async run engine — foreground i
 |------|---------|---------------------|
 | `subagent_delegate(background: true)` | Start an async run | Just the id (`sub-N`) |
 | `subagent_wait(ids?, timeout_ms?)` | Block until **all** listed runs finish (omit `ids` for all current background runs) | Statuses only, one `id (role): finished/failed` line per run — never results; errors when the timeout hits with runs unfinished |
-| `subagent_check(id)` | One-shot snapshot of a single run | `queued` / `running` + current activity / the **full output** once finished / failure reason + partial output |
+| `subagent_check(id)` | One-shot snapshot of a single run | `queued` / `running` + current activity / the **full output** once finished / failure reason + partial output. Checking a terminal run **collects** it: the output is returned once and the run leaves the registry |
 
 Typical flow:
 
@@ -203,10 +203,12 @@ Typical flow:
 Semantics worth knowing:
 
 - **Background runs survive turn cancellation** and are unaffected by a cancelled `subagent_wait` — cancelling the wait never cancels the runs; call `subagent_wait` or `subagent_check` again later.
+- **Read-once collection:** `subagent_check` on a terminal run returns the result and frees it — the output now lives in the conversation history, and only a lightweight tombstone stays in the registry (`/subagent:status` lists it under "Collected"). Re-checking a collected id explains that its result is already in the history.
+- **Inbox reminder:** every LLM call carries a `[background subagent runs]` system reminder listing the unclaimed runs (queued, running, and finished-but-unchecked alike), injected at a cache-stable head position. Runs missing from the list were already collected — so a finished run the model forgot to check keeps surfacing until it does.
 - **`timeout_ms` is optional.** Without it, `subagent_wait` blocks until every run finishes; each run is still bounded by its own role timeout.
 - Background runs share the global `maxConcurrency` gate — extra runs show up as `queued` in wait/check views.
 - **Top-level only:** nested subagents cannot delegate in the background (a subagent process exits when its task finishes, which would orphan the run).
-- The run registry lives in the pi process: a `/reload` or restart orphans in-flight background runs (their ids stop resolving). `/subagent:status` lists every registered run and its current state.
+- The run registry lives in the pi process: a `/reload` or restart orphans in-flight background runs (their ids stop resolving). `/subagent:status` lists every registered run (active + collected) and its current state.
 
 ### Background TUI display
 

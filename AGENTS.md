@@ -137,6 +137,19 @@ const roles: ModelRolesAPI = getModelRolesAPI();  // 完整类型推导
 
 **命令注册**：pi 支持冒号命令名——`pi.registerCommand("scout:skill-router", { ... })` 注册后用户用 `/scout:skill-router on` 调用。不要用一个命令手动解析 args。
 
+### Prompt 文案分层（description / promptSnippet / promptGuidelines）
+
+四层教学内容都进每次 LLM 请求（工具/参数 description 进 tools schema，promptSnippet/promptGuidelines 进 system prompt），同一事实教两遍 = 双倍 token 还互相稀释。每个事实只在一层出现，写文案前先判归属：
+
+| 层 | 教什么 | 例 |
+|----|--------|-----|
+| tool description | 契约：工具做什么、返回什么 | "wait 只返回状态，从不返回结果" |
+| param description | 契约：参数怎么填、参数间关系 | task/context/files 渠道分层 |
+| promptSnippet | 一行入口，进 Available tools 列表 | |
+| promptGuidelines | 政策：何时用、跨工具编排、行为禁令 | "别委派小事"、Typical flow、read-once collection |
+
+功能改动时把教学加进当时最顺手的层，是 guidelines 逐句膨胀的根因；新增文案时先查另外三层是否已有。
+
 ### README 与依赖文档规范
 
 **每个包 README 必须包含 `## Installation` 和 `## Dependencies`。** 即使是只给其他插件消费的基础设施扩展（不注册 tool/command，只注册 hook），也要有 Install 段告诉用户如何加载。
