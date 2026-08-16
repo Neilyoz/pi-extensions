@@ -9,8 +9,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import { tryGetMeshAPI } from "./api.ts";
+import type { MeshListDetails } from "./types.ts";
 
 /** Parse mesh_list output back into peer names for the collapsed summary. */
 function parsePeerNames(text: string): string[] {
@@ -40,27 +42,63 @@ export function registerMeshTools(pi: ExtensionAPI): void {
       return new Text(theme.fg("toolTitle", theme.bold("mesh_list")), 0, 0);
     },
 
-    // Result cell: NO tool name (call already shows it). Collapsed = name summary;
-    // expanded = the full two-line-per-peer listing.
+    // Result cell: NO tool name (call already shows it). Collapsed = width-aware
+    // name summary; expanded = per-peer coloring from the structured details:
+    // name (accent) → role (text) → branch/model (dim) → cwd/description (muted),
+    // with ambiguity warnings in `warning` so they can't be missed.
     renderResult(result, { expanded }, theme, context) {
       const isError = context.isError;
       const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
       const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
       if (expanded) {
+        const peers = (result.details as MeshListDetails | undefined)?.peers;
+        if (!peers || peers.length === 0) {
+          // No structured peers (error result, empty mesh) — dump text lines as-is.
+          const c = new Container();
+          for (const ln of text.split("\n")) c.addChild(new Text(ln, 0, 0));
+          return c;
+        }
         const c = new Container();
-        for (const ln of text.split("\n")) c.addChild(new Text(ln, 0, 0));
+        c.addChild(new Text(theme.fg("text", `Online peers (${peers.length}):`), 0, 0));
+        for (const p of peers) {
+          // Line 1: identity — name is the scan target, role the selection cue.
+          let line1 = theme.fg("accent", p.name);
+          if (p.profile?.role) line1 += ` ${theme.fg("text", `[${p.profile.role}]`)}`;
+          if (p.gitBranch) line1 += ` ${theme.fg("dim", `(${p.gitBranch})`)}`;
+          if (p.ambiguous) line1 += ` ${theme.fg("warning", "⚠ ambiguous name")}`;
+          line1 += ` ${theme.fg("dim", `· ${p.model}`)}`;
+          // Line 2: context — long secondary text.
+          let line2 = `    ${theme.fg("muted", p.cwd)}`;
+          if (p.profile?.description) line2 += theme.fg("muted", ` — ${p.profile.description}`);
+          c.addChild(new Text(`- ${line1}`, 0, 0));
+          c.addChild(new Text(line2, 0, 0));
+          if (p.ambiguous) {
+            c.addChild(
+              new Text(
+                `    ${theme.fg("warning", `sessionId: ${p.sessionId} (use this to target)`)}`,
+                0,
+                0,
+              ),
+            );
+          }
+        }
         return c;
       }
       const names = parsePeerNames(text);
-      if (names.length === 0) {
-        return new Text(`${icon} ${text.split("\n")[0] ?? ""}`, 0, 0);
-      }
-      const summary =
-        names.length <= 5
-          ? names.join(", ")
-          : `${names.slice(0, 5).join(", ")} +${names.length - 5} more`;
-      return new Text(`${icon} ${theme.fg("dim", summary)}`, 0, 0);
+      const styled =
+        names.length === 0
+          ? `${icon} ${text.split("\n")[0] ?? ""}`
+          : `${icon} ${theme.fg(
+              "dim",
+              names.length <= 5
+                ? names.join(", ")
+                : `${names.slice(0, 5).join(", ")} +${names.length - 5} more`,
+            )}`;
+      return {
+        render: (width: number) => [truncateToWidth(styled, width, "…", true)],
+        invalidate: () => {},
+      } satisfies Component;
     },
 
     async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
@@ -72,7 +110,7 @@ export function registerMeshTools(pi: ExtensionAPI): void {
           content: [
             { type: "text", text: "No other pi instances online on the mesh right now." },
           ],
-          details: {},
+          details: { peers: [] } satisfies MeshListDetails,
         };
       }
       const lines = peers.map((p) => {
@@ -91,7 +129,7 @@ export function registerMeshTools(pi: ExtensionAPI): void {
             text: `Online peers (${peers.length}):\n${lines.join("\n")}`,
           },
         ],
-        details: {},
+        details: { peers } satisfies MeshListDetails,
       };
     },
   });

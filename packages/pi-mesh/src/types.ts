@@ -74,6 +74,11 @@ export interface PeerInfo {
   ambiguous?: boolean;
 }
 
+/** Tool result details for mesh_list — structured peers so the TUI can color by importance. */
+export interface MeshListDetails {
+  peers: PeerInfo[];
+}
+
 export interface ResolvePeerOptions {
   /** Target by name. Omit to auto-pick the other same-project peer. */
   at?: string;
