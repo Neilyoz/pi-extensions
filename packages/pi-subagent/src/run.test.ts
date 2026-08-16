@@ -256,6 +256,63 @@ test("abort while queued fails the run and exposes thrown for the foreground pat
   gate.release();
 });
 
+test("handle.abort() reaps a queued background run (no caller signal)", async () => {
+  const gate = new AsyncSemaphore(1);
+  await gate.acquire();
+  const spawnImpl: SpawnImpl = async () => makeResult({ output: "never" });
+
+  const run = startSubagentRun(makeDeps({ gate, spawnImpl }));
+  run.abort("session shutdown");
+  const result = await run.promise;
+
+  assert.strictEqual(run.state, "failed");
+  assert.ok(run.thrown instanceof Error);
+  assert.match(result.errorMessage!, /cancelled while queued/);
+  assert.match(result.errorMessage!, /session shutdown/);
+  gate.release();
+});
+
+test("handle.abort(reason) fails a running run with the reason in the error message", async () => {
+  const signals: AbortSignal[] = [];
+  // Mirrors real spawn's abort handling: pre-aborted signals settle immediately
+  // (an "abort" listener alone would never fire — the event already happened).
+  const honoringSpawn: SpawnImpl = (_m, _t, options) =>
+    new Promise((_resolve, reject) => {
+      signals.push(options.signal!);
+      const die = () => reject(new Error("Subagent was aborted"));
+      if (options.signal?.aborted) die();
+      else options.signal?.addEventListener("abort", die, { once: true });
+    });
+
+  const run = startSubagentRun(makeDeps({ spawnImpl: honoringSpawn }));
+  run.abort("session shutdown");
+  const result = await run.promise;
+
+  assert.strictEqual(run.state, "failed");
+  assert.match(result.errorMessage!, /Subagent was aborted \(session shutdown\)/);
+  assert.ok(run.thrown instanceof Error);
+  // The internal controller the spawn honored is the same channel abort() used.
+  assert.ok(signals[0].aborted);
+});
+
+test("a pre-aborted caller signal chains into the run before spawn", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const spawnImpl: SpawnImpl = async (_m, _t, options) => {
+    if (options.signal?.aborted) throw new Error("Subagent was aborted");
+    return makeResult({ output: "done" });
+  };
+
+  const run = startSubagentRun(makeDeps({ signal: controller.signal, spawnImpl }));
+  const result = await run.promise;
+
+  assert.strictEqual(run.state, "failed");
+  assert.strictEqual(result.errorMessage, "Subagent was aborted");
+  // abort() after settle is a no-op — the terminal state never flips.
+  run.abort("session shutdown");
+  assert.strictEqual(run.state, "failed");
+});
+
 test("subscribers are notified on progress and terminal frames", async () => {
   let notifications = 0;
   const spawnImpl: SpawnImpl = async (_m, _t, options) => {

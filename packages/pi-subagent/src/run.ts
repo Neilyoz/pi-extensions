@@ -9,6 +9,11 @@
  * exposed via `thrown`), and a subscriber list the `wait` tool uses to mirror
  * live progress into its own tool row.
  *
+ * Every run owns an AbortController. The foreground tool signal chains into
+ * it; runs started without a caller signal (background) are still abortable
+ * via handle.abort() — session_shutdown reaps every live run that way, so no
+ * child process outlives the parent.
+ *
  * All post-processing (fallback retry, output compression, summary
  * generation, history persistence) runs inside the pipeline, so background
  * runs finish exactly like foreground ones.
@@ -52,6 +57,8 @@ export interface RunHandle {
   readonly thrown: Error | undefined;
   /** Resolves with the terminal result once the run finishes (always succeeds). */
   readonly promise: Promise<SubagentResult>;
+  /** Abort the run — no-op after settle. Tool-cancellation and session-shutdown reaping both funnel here. */
+  abort(reason?: string): void;
   /** Get notified on every frame change. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;
 }
@@ -69,7 +76,7 @@ export interface StartRunOptions {
   cwd: string;
   /** Nesting depth for the child (CURRENT_DEPTH + 1). */
   depth: number;
-  /** Foreground callers pass the tool's AbortSignal; background runs pass none and outlive the turn. */
+  /** Foreground callers chain the tool's AbortSignal in; background runs pass none and are aborted via handle.abort() instead. */
   signal?: AbortSignal;
   /** Per-call model override ('provider/model-id'), bypassing the role's configured model. */
   modelOverride?: string;
@@ -106,6 +113,14 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
   let snapshot: SubagentResult = inputFrame(-1, true);
   let result: SubagentResult | undefined;
   let thrown: Error | undefined;
+  let settled = false;
+  let abortReason: string | undefined;
+  const controller = new AbortController();
+  const onCallerAbort = () => controller.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) controller.abort();
+    else opts.signal.addEventListener("abort", onCallerAbort, { once: true });
+  }
   let resolvePromise!: (r: SubagentResult) => void;
   const promise = new Promise<SubagentResult>((resolve) => {
     resolvePromise = resolve;
@@ -126,11 +141,14 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
     notify();
   };
   const finish = (terminal: SubagentResult, error?: Error) => {
+    if (settled) return;
+    settled = true;
     result = terminal;
     snapshot = terminal;
     thrown = error;
     currentState = isFailedResult(terminal) ? "failed" : "finished";
     notify();
+    opts.signal?.removeEventListener("abort", onCallerAbort);
     resolvePromise(terminal);
   };
 
@@ -158,15 +176,22 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         listeners.delete(fn);
       };
     },
+    abort(reason?: string) {
+      if (settled) return;
+      if (reason) abortReason = reason;
+      controller.abort();
+    },
     promise,
   };
 
   (async () => {
     // ── Concurrency gate (abortable while queued) ──
     try {
-      await opts.gate.acquire(opts.signal);
+      await opts.gate.acquire(controller.signal);
     } catch {
-      const msg = "cancelled while queued for a concurrency slot";
+      const msg =
+        "cancelled while queued for a concurrency slot" +
+        (abortReason ? ` (${abortReason})` : "");
       finish({ ...inputFrame(1, false), errorMessage: msg }, new Error(msg));
       return;
     }
@@ -262,7 +287,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         maxTurns,
         maxCost,
         depth: opts.depth,
-        signal: opts.signal,
+        signal: controller.signal,
         onProgress: emitProgress,
       });
 
@@ -294,7 +319,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
             maxTurns,
             maxCost,
             depth: opts.depth,
-            signal: opts.signal,
+            signal: controller.signal,
             onProgress: emitProgress,
           });
           runResult.fallbackFrom = fallbackFrom;
@@ -348,7 +373,9 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         activityLog: partial.activityLog,
         budgetMs: partial.budgetMs,
         elapsedMs: partial.startTime ? Date.now() - partial.startTime : undefined,
-        errorMessage: err?.message || String(err),
+        errorMessage: abortReason
+          ? `Subagent was aborted (${abortReason})`
+          : err?.message || String(err),
       };
       // The run spawned before throwing — audit it like any terminal state.
       // The partial output is raw (compression never ran on it).

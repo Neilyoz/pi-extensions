@@ -19,6 +19,29 @@ const INLINE_LIMIT = 8000;
 
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 
+// ── Parent-exit safety net ─────────────────────────────────────
+// process.on("exit") fires synchronously on every terminal path that goes
+// through process.exit — normal quit, signal-triggered graceful shutdown,
+// emergency terminal exit, uncaught crash. SIGTERM the live children so each
+// pi child runs its own cleanup (killing ITS tracked grandchildren) instead
+// of burning tokens as an orphan. This covers the paths where the graceful
+// session_shutdown reaping never fires; a SIGKILL'd parent is beyond help.
+const liveChildren = new Set<ChildProcess>();
+let exitHookInstalled = false;
+function reapChildrenOnExit(): void {
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.on("exit", () => {
+    for (const child of liveChildren) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already dead */
+      }
+    }
+  });
+}
+
 function isRunnableScript(filePath: string): boolean {
   try {
     if (!fs.existsSync(filePath)) return false;
@@ -508,6 +531,8 @@ export async function spawnSubagent(
         stdio: ["ignore", "pipe", "pipe"],
       });
       proc = p;
+      liveChildren.add(p);
+      reapChildrenOnExit();
 
       p.stdout.on("data", (data: Buffer) => {
         buffer += data.toString();
@@ -522,6 +547,7 @@ export async function spawnSubagent(
 
       p.on("exit", () => {
         processExited = true;
+        liveChildren.delete(p);
         clearEscalationTimer();
       });
 
@@ -548,6 +574,7 @@ export async function spawnSubagent(
 
       p.on("error", (err) => {
         processExited = true;
+        liveChildren.delete(p);
         if (timeoutHandle) clearTimeout(timeoutHandle);
         clearEscalationTimer();
         if (onAbort && options.signal) options.signal.removeEventListener("abort", onAbort);

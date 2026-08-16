@@ -104,6 +104,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
   const collectedRuns = new Map<string, CollectedRun>();
   let runCounter = 0;
 
+  // ── Live-run reaping ─────────────────────────────────────────
+  // Every in-flight run (foreground and background alike), removed once
+  // settled. session_shutdown aborts whatever is still here so no child
+  // process outlives the parent — quit, reload, or session replacement.
+  const liveRuns = new Set<RunHandle>();
+  function trackRun(run: RunHandle): void {
+    liveRuns.add(run);
+    void run.promise.then(() => liveRuns.delete(run));
+  }
+
   // Mutable guidelines array — rebuilt in session_start to reflect agentOverrides
   const guidelines: string[] = [];
 
@@ -219,6 +229,15 @@ export default function subagentExtension(pi: ExtensionAPI) {
     }
   });
 
+  // Fires before the extension runtime is torn down (quit, reload, or
+  // session replacement). Aborting funnels through the standard abort path:
+  // children get SIGTERM → their own handlers kill grandchildren, aborted
+  // runs are audited to history, gates release. Without this, background
+  // children would burn tokens as unwaitable orphans after /reload or /new.
+  pi.on("session_shutdown", () => {
+    for (const run of liveRuns) run.abort("session shutdown");
+  });
+
   pi.registerTool({
     name: "subagent_delegate",
     label: "Delegate to subagent",
@@ -307,6 +326,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
         getRolesApi: getModelRolesAPI,
         getSessionId: () => ctx.sessionManager?.getSessionId(),
       });
+      trackRun(run);
 
       // ── Background: return the id immediately; the pipeline keeps running. ──
       if (params.background) {
