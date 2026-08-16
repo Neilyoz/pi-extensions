@@ -15,7 +15,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import { getMeshAPI } from "@d3ara1n/pi-mesh";
 import type { PeerInfo } from "@d3ara1n/pi-mesh";
 import { loadPeekConfig } from "./config.ts";
@@ -100,12 +101,15 @@ export function registerPeekTool(pi: ExtensionAPI): void {
         }
         return c;
       }
-      // Collapsed: first non-empty line, truncated. No tool name prefix.
+      // Collapsed: width-aware single-line summary — truncated with "…" when it overflows
+      // the viewport, instead of a fixed 100-char hard cut that still wraps on narrow terminals.
       const firstLine = text.split("\n").find((l) => l.trim()) ?? "";
-      const body = isError
-        ? theme.fg("error", firstLine.slice(0, 100))
-        : theme.fg("dim", firstLine.slice(0, 100));
-      return new Text(`${icon} ${body}`, 0, 0);
+      const styled =
+        `${icon} ${isError ? theme.fg("error", firstLine) : theme.fg("dim", firstLine)}`;
+      return {
+        render: (width: number) => [truncateToWidth(styled, width, "…", true)],
+        invalidate: () => {},
+      } satisfies Component;
     },
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
