@@ -32,6 +32,7 @@ import type {
 import {
   buildDisplayItems,
   clearElapsedTimer,
+  collapsedText,
   contentText,
   deriveRunState,
   ensureElapsedTimer,
@@ -234,7 +235,7 @@ export const renderBackgroundDelegateCall: RenderCallFn = (args, theme) => {
 
 export const renderBackgroundDelegateResult: RenderResultFn = (result, { expanded }, theme) => {
   const details = result.details as BackgroundDelegateDetails | undefined;
-  if (!details) return new Text(contentText(result), 0, 0);
+  if (!details) return collapsedText(contentText(result));
 
   const fg = theme.fg.bind(theme) as Fg;
   // One-line anchor: marker + id + task preview. The run's live state is NOT
@@ -242,7 +243,7 @@ export const renderBackgroundDelegateResult: RenderResultFn = (result, { expande
   // progresses invisibly until a wait/check row picks it up.
   const summaryLine = `${fg("accent", "\u25B6")} ${fg("dim", details.id)} ${fg("text", taskPreview(details.task))}`;
 
-  if (!expanded) return new Text(summaryLine, 0, 0);
+  if (!expanded) return collapsedText(summaryLine);
 
   // Expanded: full input — reference files, context size, task text.
   const container = new Container();
@@ -272,7 +273,7 @@ export const renderWaitCall: RenderCallFn = (args, theme) => {
 export const renderWaitResult: RenderResultFn = (result, { expanded }, theme, context) => {
   const details = result.details as WaitDetails | undefined;
   if (!details || details.entries.length === 0) {
-    return new Text(contentText(result), 0, 0);
+    return collapsedText(contentText(result));
   }
 
   // Tick while any watched run is still live. A timed-out wait freezes the
@@ -301,7 +302,7 @@ export const renderWaitResult: RenderResultFn = (result, { expanded }, theme, co
   }
 
   const text = details.entries.map((e) => waitEntryCollapsedText(e, fg)).join("\n\n");
-  return new Text(text, 0, 0);
+  return collapsedText(text);
 };
 
 // ── check: frozen single-run snapshot ──────────────────────────
@@ -314,11 +315,11 @@ export const renderCheckCall: RenderCallFn = (args, theme) => {
 
 export const renderCheckResult: RenderResultFn = (result, { expanded }, theme, _context) => {
   const details = result.details as CheckDetails | undefined;
-  if (!details) return new Text(contentText(result), 0, 0);
+  if (!details) return collapsedText(contentText(result));
 
   const fg = theme.fg.bind(theme) as Fg;
   // Static snapshot — never starts the animation timer (the execute layer
   // freezes the frame before handing it over).
   if (expanded) return checkEntryExpandedContainer(details.result, fg);
-  return new Text(checkEntryCollapsedText(details.result, fg), 0, 0);
+  return collapsedText(checkEntryCollapsedText(details.result, fg));
 };

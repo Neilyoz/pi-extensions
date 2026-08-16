@@ -11,6 +11,7 @@ import type { SubagentDetails } from "./types.ts";
 import {
   buildDisplayItems,
   clearElapsedTimer,
+  collapsedText,
   contentText,
   ensureElapsedTimer,
   formatFallback,
@@ -57,7 +58,7 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
   }
 
   if (!details || details.results.length === 0) {
-    return new Text(contentText(result), 0, 0);
+    return collapsedText(contentText(result));
   }
 
   const r = details.results[0];
@@ -192,5 +193,5 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
   }
   if (fallbackLine) text += `\n${fallbackLine}`;
   if (usageLine) text += `\n${theme.fg("dim", usageLine)}`;
-  return new Text(text, 0, 0);
+  return collapsedText(text);
 };

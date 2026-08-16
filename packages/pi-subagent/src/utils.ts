@@ -5,6 +5,8 @@
  */
 
 import * as os from "node:os";
+import type { Component } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type {
   ActivityEntry,
   FallbackFrom,
@@ -257,6 +259,23 @@ export function contentText(result: { content: Array<{ type: string; text?: stri
 export function taskPreview(task: string): string {
   const firstLine = task.split("\n")[0];
   return firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
+}
+
+/**
+ * Width-aware collapsed-view component: renders each line truncated with "…"
+ * to the actual viewport width (never wraps), padded full-width like Text(0,0).
+ *
+ * The char caps in taskPreview/formatToolCall/etc. stay as they are — they are
+ * content limits shared with the LLM-facing text (check output, error
+ * messages), which has no viewport semantics. This component is the TUI-side
+ * final guard, applied where the folding affordance exists.
+ */
+export function collapsedText(text: string): Component {
+  const lines = text.split("\n");
+  return {
+    render: (width: number) => lines.map((ln) => truncateToWidth(ln, width, "…", true)),
+    invalidate: () => {},
+  };
 }
 
 /** Status icon for a run frame: ⏸ queued / ⏳ running / ⏱ timeout / ⏲ budget / ✗ failed / ✓ ok */
