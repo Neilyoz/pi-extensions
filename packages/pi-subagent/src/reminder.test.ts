@@ -111,9 +111,9 @@ describe("buildInboxReminder", () => {
     assert.ok(text.includes(`"${"x".repeat(70)}..."`));
   });
 
-  test("header explains collection semantics", () => {
+  test("header explains pull-only collection semantics", () => {
     const text = buildInboxReminder([entry({ id: "sub-1", state: "running" })])!;
-    assert.match(text, /^\[background subagent runs — subagent_check claims/);
+    assert.match(text, /^\[background subagent runs — results are pull-only/);
     assert.match(text, /already collected\]/);
   });
 });

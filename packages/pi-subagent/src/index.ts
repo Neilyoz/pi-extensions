@@ -149,13 +149,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
       "",
       ...exampleLines,
       "",
-      "For multiple independent substantial tasks, emit multiple subagent_delegate calls in one turn — they run in parallel.",
+      "EXECUTION MODES:",
       "",
-      "BACKGROUND DELEGATION — start runs now, collect results later:",
+      "- Foreground (default): the call blocks until the run finishes and returns the final output directly.",
+      "- Parallel: multiple subagent_delegate calls at the same time run concurrently — foreground and background alike, no special flag.",
+      "- Background (background: true): non-blocking — returns an id immediately so you can do your own work while the run executes.",
       "",
-      "- Typical flow: subagent_delegate(background: true) ×N → keep working → subagent_wait(ids) to block until every listed run finishes (omit ids to wait for all) → subagent_check(id) for each finished run.",
-      "- A terminal check collects the run — the output is returned once and the run leaves the registry. Mid-run checks are free: peek at progress as often as you like; only terminal checks collect.",
-      "- Every LLM call carries a [background subagent runs] reminder listing your unclaimed runs (queued, running, and finished-but-unchecked alike). Runs missing from that list were already collected.",
+      "BACKGROUND DELEGATION:",
+      "",
+      "- Use it only when you have your own work this turn (including an ongoing discussion with the user) while the run executes; otherwise let the call block and return the result directly.",
+      "- Results are pull-only — no completion event, no notification, nothing wakes you. Dispatching means owning the collection point: finish your own work, then subagent_check(id) for each result. Use subagent_wait(ids) to block until the run finish.",
       "- Background delegation works only in the top-level session.",
     );
   }
@@ -267,7 +270,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       background: Type.Optional(
         Type.Boolean({
           description:
-            "Run asynchronously: returns an id (sub-N) immediately instead of blocking. The run survives turn cancellation.",
+            "Non-blocking: returns an id immediately so you can do your own work (or keep discussing with the user) while the run executes — not for parallelism (several foreground calls in one turn already run concurrently). Results are pull-only: nothing delivers them to you or wakes you; fetch with subagent_wait/subagent_check when your own work is done. If the next thing you'd do is wait for the result, omit this and let the call block.",
         }),
       ),
       cwd: Type.Optional(Type.String({ description: "Working directory (defaults to current)" })),

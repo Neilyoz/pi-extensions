@@ -177,7 +177,11 @@ Delegate tasks that would generate many tool calls or verbose output to keep you
 
 ## Background Delegation
 
-Foreground and background delegation share one async run engine — foreground is simply background-but-blocking. With `background: true`, `subagent_delegate` returns immediately with a run id, and two companion tools collect the outcome:
+Three execution properties, kept separate:
+
+- **Foreground** (default): the call blocks until the run finishes and returns the final output directly. (Under the hood foreground and background share one async run engine — foreground is simply background-but-blocking.)
+- **Parallel**: multiple `subagent_delegate` calls in one turn run concurrently — foreground and background alike, no special flag.
+- **Background** (`background: true`): non-blocking — `subagent_delegate` returns immediately with a run id. Use it when you have your own work to do (or a discussion with the user to continue) while the run executes; two companion tools collect the outcome:
 
 | Tool | Purpose | Returns to the model |
 |------|---------|---------------------|
@@ -204,6 +208,7 @@ Typical flow:
 
 Semantics worth knowing:
 
+- **Results are pull-only.** Nothing delivers them to the model — no completion event, no notification, nothing wakes the model up. The model owns the collection point: `subagent_wait`, then `subagent_check` each run. The inbox reminder (below) lists unclaimed runs on every request, but it never pushes results.
 - **Background runs survive turn cancellation** and are unaffected by a cancelled `subagent_wait` — cancelling the wait never cancels the runs; call `subagent_wait` or `subagent_check` again later.
 - **Read-once collection:** `subagent_check` on a terminal run returns the result and frees it — the output now lives in the conversation history, and only a lightweight tombstone stays in the registry (`/subagent:status` lists it under "Collected"). Re-checking a collected id explains that its result is already in the history.
 - **Inbox reminder:** every LLM call carries a `[background subagent runs]` system reminder listing the unclaimed runs (queued, running, and finished-but-unchecked alike), injected at a cache-stable head position. Runs missing from the list were already collected — so a finished run the model forgot to check keeps surfacing until it does.
