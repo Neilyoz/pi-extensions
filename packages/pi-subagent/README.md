@@ -2,7 +2,7 @@
 
 Role-based subagent orchestration for [pi](https://github.com/earendil-works/pi).
 
-Provides a `subagent_delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries. Runs can be foreground (blocking) or background (asynchronous, collected later via `subagent_wait`/`subagent_check`).
+Provides a `subagent_delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries. Runs can be foreground (blocking) or background (asynchronous, collected later via `subagent_wait`/`subagent_check`, cancellable via `subagent_cancel`).
 
 ## Design Philosophy
 
@@ -55,7 +55,8 @@ This means:
 | Command | Description |
 |---------|-------------|
 | `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, and role references |
-| `/subagent:status` | List background subagent runs and their current state |
+| `/subagent:status` | List background runs (active + collected) and their current state |
+| `/subagent:cancel <id\|all> [reason]` | Cancel a live background run (or every live run); the optional reason is recorded with the run |
 
 ## Dependencies
 
@@ -181,13 +182,14 @@ Three execution properties, kept separate:
 
 - **Foreground** (default): the call blocks until the run finishes and returns the final output directly. (Under the hood foreground and background share one async run engine — foreground is simply background-but-blocking.)
 - **Parallel**: multiple `subagent_delegate` calls in one turn run concurrently — foreground and background alike, no special flag.
-- **Background** (`background: true`): non-blocking — `subagent_delegate` returns immediately with a run id. Use it when you have your own work to do (or a discussion with the user to continue) while the run executes; two companion tools collect the outcome:
+- **Background** (`background: true`): non-blocking — `subagent_delegate` returns immediately with a run id. Use it when you have your own work to do (or a discussion with the user to continue) while the run executes; three companion tools manage the outcome:
 
 | Tool | Purpose | Returns to the model |
 |------|---------|---------------------|
 | `subagent_delegate(background: true)` | Start an async run | Just the id (`sub-N`) |
 | `subagent_wait(ids?, timeout_ms?)` | Block until **all** listed runs finish (omit `ids` for all current background runs) | Statuses only, one `id (role): finished/failed` line per run — never results; errors when the timeout hits with runs unfinished |
 | `subagent_check(id)` | One-shot snapshot of a single run | `queued` / `running` + current activity / the **full output** once finished / failure reason + partial output. Checking a terminal run **collects** it: the output is returned once and the run leaves the registry |
+| `subagent_cancel(id, reason?)` | Kill one live (queued/running) run | Confirmation with the partial-output size — the run settles as `cancelled` (warning styling, same family as timeout/budget) with the reason in its error message; the partial output stays in the registry for `subagent_check` to collect |
 
 Typical flow:
 
@@ -211,7 +213,8 @@ Semantics worth knowing:
 - **Results are pull-only.** Nothing delivers them to the model — no completion event, no notification, nothing wakes the model up. The model owns the collection point: `subagent_wait`, then `subagent_check` each run. The inbox reminder (below) lists unclaimed runs on every request, but it never pushes results.
 - **Background runs survive turn cancellation** and are unaffected by a cancelled `subagent_wait` — cancelling the wait never cancels the runs; call `subagent_wait` or `subagent_check` again later.
 - **Read-once collection:** `subagent_check` on a terminal run returns the result and frees it — the output now lives in the conversation history, and only a lightweight tombstone stays in the registry (`/subagent:status` lists it under "Collected"). Re-checking a collected id explains that its result is already in the history.
-- **Inbox reminder:** every LLM call carries a `[background subagent runs]` system reminder listing the unclaimed runs (queued, running, and finished-but-unchecked alike), injected at a cache-stable head position. Runs missing from the list were already collected — so a finished run the model forgot to check keeps surfacing until it does.
+- **Cancellation keeps the partial output.** `subagent_cancel(id, reason?)` kills the child (SIGTERM, escalating to SIGKILL) and settles the run as `cancelled` — its own stop reason in the same family as `timeout`/`budget_exceeded` (TUI warning styling ⏹, not the error-red ✗ of real failures) — with whatever it had produced. The `reason` becomes the error message verbatim, so whoever reads the partial output later via `subagent_check` — or the audit history — sees `cancelled — <reason>`; the source is distinguishable too (`user: ...` for `/subagent:cancel`, the model's own words for the tool, `session shutdown` for reaping). Cancelling does not collect: `subagent_check` still returns the partial output once, and `subagent_wait` reports the run as `cancelled (partial output kept)`.
+- **Inbox reminder:** every LLM call carries a `[background subagent runs]` system reminder listing the unclaimed runs (queued, running, and finished-but-unchecked alike, including cancelled ones — shown as `cancelled — <reason>`), injected at a cache-stable head position. Runs missing from the list were already collected — so a finished run the model forgot to check keeps surfacing until it does.
 - **`timeout_ms` is optional.** Without it, `subagent_wait` blocks until every run finishes; each run is still bounded by its own role timeout.
 - Background runs share the global `maxConcurrency` gate — extra runs show up as `queued` in wait/check views.
 - **Top-level only:** nested subagents cannot delegate in the background (a subagent process exits when its task finishes, which would orphan the run).
@@ -222,8 +225,9 @@ Semantics worth knowing:
 Each tool row renders one aspect of the same decomposition the foreground row shows all at once (input · process · result · usage):
 
 - **Background subagent_delegate row = input only.** Collapsed: `▶ sub-1 <task first line>`. Expanded: plus `@file` references, context size, and the full task text. Static — the run progresses invisibly until a subagent_wait/subagent_check row picks it up.
-- **subagent_wait row = process + usage.** One block per watched run: status line (`⏸ queued / ⏳ running` + id + task preview; bare, icon-free once terminal), a live activity stream (collapsed keeps the latest 5 items with a leading ellipsis; expanded shows everything) and a ticking usage bar. Once a run finishes, its process stream is replaced by a **status-only** result line (`✓ finished` / `⏲ budget-exceeded with the reason` / `✗ <reason>`) — the output itself never appears in a subagent_wait row; expanded keeps the full process stream instead. A timed-out wait freezes the view.
+- **subagent_wait row = process + usage.** The input line shows the id list (or `(all)`) plus the timeout ceiling (`≤30s`) when one was given. One block per watched run: status line (`⏸ queued / ⏳ running` + id + task preview; bare, icon-free once terminal), a live activity stream (collapsed keeps the latest 5 items with a leading ellipsis; expanded shows everything) and a ticking usage bar. Once a run finishes, its process stream is replaced by a **status-only** result line (`✓ finished` / `⏲ budget-exceeded with the reason` / `⏱ timed out` / `⏹ cancelled with the reason` / `✗ <reason>`) — the output itself never appears in a subagent_wait row; expanded keeps the full process stream instead. A timed-out wait freezes the view.
 - **subagent_check row = the result view.** Same block shape as subagent_wait's single-run view (no id — there is only one), but the result line shows `✓ <AI summary>` (or the budget/failure reason when the run stopped early) and the expanded view renders the **full output** — subagent_check is where the conclusion lives.
+- **subagent_cancel row = confirmation only.** Collapsed: `⏹ sub-1 (worker): cancelled after 1 turn (~29s)` (or `• sub-1 (worker) already finished — nothing to cancel` for a no-op). Expanded adds the reason and the pointer to `subagent_check` — the partial output **never renders here**; it stays in the registry until a check row fetches it (layer contract: delegate = input, wait = process, cancel = intervention, check = result).
 
 ### Passing context and reference files
 
@@ -269,7 +273,7 @@ When a provider error (429, quota, timeout, ...) kills a run and the whole task 
 
 ### Run history
 
-Every **spawned** delegate run is written (best-effort) to `~/.pi/subagent/history/{sessionId}/{toolCallId}.json` — finished, failed, and aborted alike (an aborted run already consumed tokens, so its partial activity and cost stay auditable). Records cover role, task, usage, activity log, the **full raw output** (even when the main model saw a compressed/truncated version), and the `fallbackFrom` snapshot when the run was retried on the fallback role. Runs that never spawned (cancelled while queued, role/model resolution failures) are not recorded. Useful for auditing what subagents did and how much they cost. Disable with `history.enabled: false`.
+Every **spawned** delegate run is written (best-effort) to `~/.pi/subagent/history/{sessionId}/{toolCallId}.json` — finished, failed, and aborted alike (an aborted run already consumed tokens, so its partial activity and cost stay auditable). Records cover role, task, usage, activity log, the **full raw output** (even when the main model saw a compressed/truncated version), and the `fallbackFrom` snapshot when the run was retried on the fallback role. Runs that never spawned (cancelled before starting — at the concurrency gate or during model resolution) are not recorded. Useful for auditing what subagents did and how much they cost. Disable with `history.enabled: false`.
 
 ## License
 

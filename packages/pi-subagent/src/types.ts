@@ -230,3 +230,10 @@ export interface CheckDetails {
   role: string;
   result: SubagentResult;
 }
+
+/**
+ * Details for a cancel tool result — same shape as check: the run's terminal
+ * frame. Renders with the confirmation-only view: the stop summary and the
+ * reason, never the partial output (check is the result-fetcher).
+ */
+export type CancelDetails = CheckDetails;

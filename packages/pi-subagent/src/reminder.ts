@@ -44,6 +44,13 @@ function inboxStatus(entry: InboxEntry): string {
   if (entry.state === "running") return "running";
   const secs = elapsedSeconds(entry.snapshot);
   const ran = secs != null ? ` (ran ${formatDuration(secs)})` : "";
+  // Cancels are recorded with their own label — the model reading the inbox
+  // must not mistake a deliberate stop ("we no longer need this") for a
+  // crashed run. Same shape as the failed row, reason and frozen duration.
+  if (entry.snapshot.stopReason === "cancelled") {
+    const reason = taskPreview(entry.snapshot.errorMessage || "no reason recorded");
+    return `cancelled — ${reason}${ran}`;
+  }
   if (entry.state === "failed") {
     const reason = taskPreview(entry.snapshot.errorMessage || entry.snapshot.stderr || "unknown error");
     return `failed — ${reason}${ran}`;

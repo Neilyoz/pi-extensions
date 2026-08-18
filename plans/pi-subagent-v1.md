@@ -1,34 +1,39 @@
 # pi-subagent — v1 收尾：subagent_cancel 与 /subagent:view
 
-> v1 范围 = 最小干预 + 观测闭环补全：**cancel** 放弃不再需要的 run（干预），
-> **view** 用户围观面板（观测）。
+> v1 范围 = 最小干预 + 观测闭环补全：**cancel** 已交付（工具 + `/subagent:cancel`），
+> **view** 用户围观面板仍 pending。
 > 收件箱 reminder 与 check 收集（阅后即焚）已上线——cancel 产生的终态直接融入现有语义，
 > 不需要任何配套改动。
 > steer 与 transport 迁 RpcClient 归 v2（`plans/pi-subagent-v2.md`）。
 
-## subagent_cancel — 现有 json transport，不依赖迁移
+## subagent_cancel — 已交付
 
-背景：background 委派目前只有观察手段（wait / check / `/subagent:status` / reminder），
-没有干预手段。主模型发现 run 走偏时只能眼睁睁等它烧完时间与预算。
+背景：background 委派此前只有观察手段（wait / check / `/subagent:status` / reminder），
+没有干预手段。主模型发现 run 走偏时只能眼睁睁看它烧完时间与预算。
 
-- 引擎：`startSubagentRun` 内部持有 AbortController；foreground 的工具 signal 与
-  `run.cancel()` 任一触发即中止——现有 gate.abort / spawn kill 链路原样复用
-- `RunHandle` 增加 `cancel(): void`（幂等）
-- 终态语义：state `failed`、`stopReason: "cancelled"`（`isFailedResult` 词表加入）、
-  errorMessage `"Cancelled via subagent_cancel"`；partial output / activity 保留，
-  check 仍可取回
-- 边界：
-  - 只作用于 top-level registry 的 background run（foreground 的主模型阻塞在自己
-    调用里，无法 cancel）
-  - 对已终态 run 返回当前状态（`sub-1 (worker): finished — nothing to cancel`），
-    无副作用；对已 collected 的 id 按收件箱语义报 already collected
-  - queued 的 run 也能 cancel（gate.acquire 的 abort 路径已支持）
+已交付形态：
+
+- 引擎复用既有 AbortController + `handle.abort(reason)`（机制词 abort / 呈现词 cancel
+  的分层，见 v2 前置决策）；kill 链路（SIGTERM → 5s grace → SIGKILL）原样复用
+- **`subagent_cancel(id, reason?)` 工具**：reason 由模型填写，成为终态 errorMessage
+  原文；abort 后 `await run.promise` 取终态帧返回确认（cancel 不收集，check 仍可取）
+- **`/subagent:cancel <id|all> [reason]` 命令**：用户侧入口（原计划归 v2，提前交付）；
+  不填 reason → `"user"`，填了 → `"user: <理由>"`——agent check 取回 partial output 时
+  能看到是被用户取消的、还带原因（模型侧 reason 则是模型自己的措辞，来源可分辨）
+- **终态 `stopReason: "cancelled"`**（`isFailedResult` 词表，与 timeout 同族）：
+  state `failed`、TUI ⏹ warning 色（不占 error 红 ✗）、partial output/activity 保留、
+  check 报 `cancelled — <reason>` + partial output；errorMessage 即 reason 原文
+  （不包壳，渲染层统一加 `cancelled — ` 前缀），wait 报
+  `cancelled (partial output kept)`
+- 边界：只作用于 top-level registry 的 background run（foreground 的主模型阻塞在
+  自己调用里，无法 cancel）；已终态 run 返回当前状态并指向 check；已 collected 的
+  id 按 already collected 语义报错；queued 的 run 也能 cancel（报
+  `still queued for a concurrency slot (<reason>)`）
 - wait 联动：被 cancel 的 run promise resolve（failed），等待中的 wait 正常返回
-- **收件箱联动**（零改动自然生效）：cancelled 是终态 → 留在收件箱（failed 行带
-  cancelled 原因），直到模型 check 收集；reminder 的字节稳定规则不变
-- TUI：`⏹ cancelled`（warning 色——模型主动行为，不配 error 红 ✗）；实测定稿
-- 工具参数 `{ id }`；description / guidelines / README（背景工具表加行）同步——
-  遵循 AGENTS.md 文案分层契约（cancel 的"何时用"归 guidelines，机制归 description）
+- **收件箱联动**（零改动自然生效）：cancelled 是终态 → 留在收件箱（带 cancelled
+  原因），直到模型 check 收集；reminder 的字节稳定规则不变
+- 文案分层：cancel 的"何时用"归 guidelines（BACKGROUND DELEGATION 一行入口），
+  机制与 reason 语义归 tool/param description
 
 ## /subagent:view — 用户发起的动态观察面板
 
@@ -84,5 +89,5 @@ status 看断片，要么看 wait 的工具行（那是 agent 的行为，用户
 ## 不做（归 v2 或后续）
 
 - steer / followUp / nested run 纠偏 → v2
-- view 面板内的操作（选中 run 按 c 取消等 UI 入口）→ cancel 工具先给模型；用户侧
-  UI 入口等 v2 一起评估
+- view 面板内的操作（选中 run 按 c 取消等 UI 入口）→ 用户侧取消入口已由
+  `/subagent:cancel` 覆盖；面板内操作仍待 view 落地后一起评估

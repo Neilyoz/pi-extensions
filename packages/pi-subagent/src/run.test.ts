@@ -137,6 +137,9 @@ test("a throwing spawn resolves the promise with a failed result carrying the er
   assert.strictEqual(run.state, "failed");
   assert.ok(run.thrown instanceof Error);
   assert.strictEqual(run.thrown.message, "Subagent was aborted");
+  // Non-abort crashes (spawn failure) keep the plain thrown message — the
+  // cancelled stop reason is reserved for real aborts.
+  assert.strictEqual(result.stopReason, undefined);
   assert.strictEqual(result.errorMessage, "Subagent was aborted");
   // The partial frame survives — the foreground path renders aborts like any
   // failure (task line + activity + result line) instead of a bare error.
@@ -252,7 +255,8 @@ test("abort while queued fails the run and exposes thrown for the foreground pat
 
   assert.strictEqual(run.state, "failed");
   assert.ok(run.thrown instanceof Error);
-  assert.match(result.errorMessage!, /cancelled while queued/);
+  assert.strictEqual(result.stopReason, "cancelled");
+  assert.match(result.errorMessage!, /still queued for a concurrency slot/);
   gate.release();
 });
 
@@ -267,8 +271,8 @@ test("handle.abort() reaps a queued background run (no caller signal)", async ()
 
   assert.strictEqual(run.state, "failed");
   assert.ok(run.thrown instanceof Error);
-  assert.match(result.errorMessage!, /cancelled while queued/);
-  assert.match(result.errorMessage!, /session shutdown/);
+  assert.strictEqual(result.stopReason, "cancelled");
+  assert.strictEqual(result.errorMessage, "still queued for a concurrency slot (session shutdown)");
   gate.release();
 });
 
@@ -289,7 +293,10 @@ test("handle.abort(reason) fails a running run with the reason in the error mess
   const result = await run.promise;
 
   assert.strictEqual(run.state, "failed");
-  assert.match(result.errorMessage!, /Subagent was aborted \(session shutdown\)/);
+  assert.strictEqual(result.stopReason, "cancelled");
+  // The abort reason becomes the errorMessage verbatim — renderers add the
+  // "cancelled" framing, so the message itself must not repeat it.
+  assert.strictEqual(result.errorMessage, "session shutdown");
   assert.ok(run.thrown instanceof Error);
   // The internal controller the spawn honored is the same channel abort() used.
   assert.ok(signals[0].aborted);
@@ -307,7 +314,10 @@ test("a pre-aborted caller signal chains into the run before spawn", async () =>
   const result = await run.promise;
 
   assert.strictEqual(run.state, "failed");
-  assert.strictEqual(result.errorMessage, "Subagent was aborted");
+  // Caller-signal abort (foreground Esc): no explicit reason was given, so
+  // the cancelled frame falls back to the bare "cancelled" message.
+  assert.strictEqual(result.stopReason, "cancelled");
+  assert.strictEqual(result.errorMessage, "cancelled");
   // abort() after settle is a no-op — the terminal state never flips.
   run.abort("session shutdown");
   assert.strictEqual(run.state, "failed");

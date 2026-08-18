@@ -35,6 +35,7 @@ import {
   formatFallbackNote,
   formatBudgetNote,
   formatCheckText,
+  formatCancelText,
   formatTimePart,
   freezeFrame,
   createThrottler,
@@ -411,6 +412,15 @@ describe("terminalResultLine", () => {
       "\u23F2 Budget exceeded (50 turns; partial output returned)",
     );
   });
+  test("cancelled maps to the ⏹ warning styling like timeout/budget", () => {
+    assert.equal(
+      terminalResultLine(
+        baseResult({ exitCode: 1, stopReason: "cancelled", errorMessage: "user: wrong direction" }),
+        id,
+      ),
+      "\u23F9 user: wrong direction",
+    );
+  });
   test("success chain: AI summary wins, then output first line, then placeholder", () => {
     assert.equal(terminalResultLine(baseResult({ summary: "did the thing" }), id), "\u2713 did the thing");
     assert.equal(terminalResultLine(baseResult(), id), "\u2713 ok");
@@ -528,6 +538,8 @@ describe("background run helpers", () => {
     assert.equal(deriveRunState(baseResult()), "finished");
     assert.equal(deriveRunState(baseResult({ exitCode: 1 })), "failed");
     assert.equal(deriveRunState(baseResult({ stopReason: "timeout", exitCode: 124 })), "failed");
+    // cancelled stops are failures with partial output (same family as timeout)
+    assert.equal(deriveRunState(baseResult({ stopReason: "cancelled" })), "failed");
     // budget stops are intentional finishes
     assert.equal(deriveRunState(baseResult({ stopReason: "budget_exceeded" })), "finished");
   });
@@ -601,6 +613,47 @@ describe("background run helpers", () => {
       /^sub-1 \(explorer\): failed — boom\n\nPartial output:\nok$/,
     );
     assert.match(formatCheckText("sub-1", "explorer", baseResult()), /^sub-1 \(explorer\): finished\n\nok$/);
+  });
+
+  test("formatCheckText renders cancelled with the bare reason and partial output", () => {
+    assert.match(
+      formatCheckText(
+        "sub-1",
+        "explorer",
+        baseResult({ exitCode: 1, stopReason: "cancelled", errorMessage: "user: wrong direction" }),
+      ),
+      /^sub-1 \(explorer\): cancelled — user: wrong direction\n\nPartial output:\nok$/,
+    );
+  });
+
+  test("formatCancelText distinguishes never-started cancels from mid-run cancels", () => {
+    // Never-started cancel (gate/model-resolution phase): terminal frame has
+    // NO elapsedMs — nothing ran. Mirrors the real terminal-frame shape:
+    // startTime never survives (live-frame-only field), duration freezes
+    // into elapsedMs.
+    assert.match(
+      formatCancelText("sub-1", "explorer", baseResult({ exitCode: -1, output: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 } })),
+      /^sub-1 \(explorer\): cancelled — never started, no partial output\. subagent_check\(sub-1\) clears the registry entry\.$/,
+    );
+    // Mid-run cancel: real terminal shape — elapsedMs frozen, no startTime.
+    const midRun = baseResult({
+      exitCode: -1,
+      elapsedMs: 45000,
+      output: "partial findings",
+      usage: { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.1, contextTokens: 0, turns: 3 },
+    });
+    assert.match(
+      formatCancelText("sub-2", "worker", midRun),
+      /^sub-2 \(worker\): cancelled after 3 turns \(~45s\) — partial output \(16 chars\) kept in the registry; subagent_check\(sub-2\) returns it once\.$/,
+    );
+    // Aborted before the first completed turn: "under a turn", not "0 turns".
+    const underATurn = baseResult({
+      exitCode: -1,
+      elapsedMs: 2000,
+      output: "",
+      usage: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.05, contextTokens: 0, turns: 0 },
+    });
+    assert.match(formatCancelText("sub-3", "worker", underATurn), /cancelled after under a turn \(~2s\)/);
   });
 
   test("formatCheckText flags budget-stopped runs as partial on the finished line", () => {

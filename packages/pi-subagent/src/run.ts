@@ -190,9 +190,11 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
       await opts.gate.acquire(controller.signal);
     } catch {
       const msg =
-        "cancelled while queued for a concurrency slot" +
-        (abortReason ? ` (${abortReason})` : "");
-      finish({ ...inputFrame(1, false), errorMessage: msg }, new Error(msg));
+        "still queued for a concurrency slot" + (abortReason ? ` (${abortReason})` : "");
+      finish(
+        { ...inputFrame(1, false), stopReason: "cancelled", errorMessage: msg },
+        new Error(msg),
+      );
       return;
     }
 
@@ -364,17 +366,23 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
       // Keep whatever the last live frame gathered so aborted/crashed runs
       // still show their partial activity and usage.
       const partial = snapshot;
+      // Aborts settle as their own stop reason ("cancelled", same family as
+      // timeout/budget: intentional stop with partial output) and the abort
+      // reason becomes the error message verbatim — no wrapper needed, every
+      // renderer already prefixes "cancelled". Non-abort crashes (spawn
+      // failure) keep the plain thrown message.
+      const wasCancelled = controller.signal.aborted;
       const terminal: SubagentResult = {
         ...inputFrame(1, false),
         output: partial.output,
         usage: partial.usage,
         model: partial.model,
-        stopReason: partial.stopReason,
+        stopReason: wasCancelled ? "cancelled" : undefined,
         activityLog: partial.activityLog,
         budgetMs: partial.budgetMs,
         elapsedMs: partial.startTime ? Date.now() - partial.startTime : undefined,
-        errorMessage: abortReason
-          ? `Subagent was aborted (${abortReason})`
+        errorMessage: wasCancelled
+          ? abortReason || "cancelled"
           : err?.message || String(err),
       };
       // The run spawned before throwing — audit it like any terminal state.

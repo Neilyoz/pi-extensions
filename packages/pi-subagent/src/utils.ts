@@ -288,6 +288,7 @@ export function runIcon(
   if (state === "running") return fg("warning", "\u23F3");
   if (r.stopReason === "timeout") return fg("warning", "\u23F1");
   if (r.stopReason === "budget_exceeded") return fg("warning", "\u23F2");
+  if (r.stopReason === "cancelled") return fg("warning", "\u23F9");
   if (state === "failed") return fg("error", "\u2717");
   return fg("success", "\u2713");
 }
@@ -299,9 +300,14 @@ function failureResultText(r: {
 }): { content: string; col: "warning" | "error" } {
   const isTimeout = r.stopReason === "timeout";
   const isBudget = r.stopReason === "budget_exceeded";
+  const isCancelled = r.stopReason === "cancelled";
   return {
-    content: r.errorMessage || (isTimeout ? "Timed out" : isBudget ? "Budget exceeded" : "failed"),
-    col: isTimeout || isBudget ? "warning" : "error",
+    content:
+      r.errorMessage ||
+      (isTimeout ? "Timed out" : isBudget ? "Budget exceeded" : isCancelled ? "Cancelled" : "failed"),
+    // Timeout/budget/cancel are intentional stops with partial output —
+    // warning, not the error red reserved for real failures.
+    col: isTimeout || isBudget || isCancelled ? "warning" : "error",
   };
 }
 
@@ -386,6 +392,7 @@ export function isFailedResult(r: { exitCode: number; stopReason?: string }): bo
     r.exitCode !== 0 ||
     r.stopReason === "error" ||
     r.stopReason === "aborted" ||
+    r.stopReason === "cancelled" ||
     r.stopReason === "timeout"
   );
 }
@@ -509,10 +516,49 @@ export function formatCheckText(id: string, role: string, r: SubagentResult): st
   const head = `${id} (${role})`;
   if (state === "queued") return `${head}: queued — waiting for a concurrency slot.`;
   if (state === "running") return `${head}: running — ${describeCurrentActivity(r)}`;
+  if (r.stopReason === "cancelled") {
+    // errorMessage is the bare abort reason ("user: ..." / "session shutdown")
+    // — the "cancelled" prefix here is the only wrapper it gets.
+    return `${head}: cancelled — ${r.errorMessage || "no reason recorded"}\n\nPartial output:\n${r.output}${formatFallbackNote(r)}`;
+  }
   if (state === "failed") {
     return `${head}: failed — ${r.errorMessage || r.stderr || "unknown error"}\n\nPartial output:\n${r.output}${formatFallbackNote(r)}`;
   }
   return `${head}: finished\n\n${r.output}${formatBudgetNote(r)}${formatFallbackNote(r)}${formatUsageFooter(r)}`;
+}
+
+/**
+ * Cancel confirmation text: short, no output dump — the partial output is
+ * check's job to return (read-once collection). Always points at check so
+ * the now-failed registry entry (and its inbox-reminder line) gets cleared.
+ */
+/**
+ * Compact stop summary shared by the cancel tool text and its TUI row:
+ * `cancelled after 3 turns (~45s)` / `cancelled after under a turn (~2s)` /
+ * `cancelled — never started` (never spawned: no elapsedMs on the frame).
+ */
+export function cancelStopSummary(r: SubagentResult): string {
+  if (r.elapsedMs == null) return "cancelled — never started";
+  const turns = r.usage.turns;
+  const secs = Math.max(1, Math.round(r.elapsedMs / 1000));
+  const turnNote = turns > 0 ? `${turns} turn${turns === 1 ? "" : "s"}` : "under a turn";
+  return `cancelled after ${turnNote} (~${secs}s)`;
+}
+
+/**
+ * Cancel confirmation text: short, no output dump — the partial output is
+ * check's job to return (read-once collection). Always points at check so
+ * the now-cancelled registry entry (and its inbox-reminder line) gets cleared.
+ */
+export function formatCancelText(id: string, role: string, r: SubagentResult): string {
+  const head = `${id} (${role})`;
+  if (r.elapsedMs == null) {
+    return `${head}: cancelled — never started, no partial output. subagent_check(${id}) clears the registry entry.`;
+  }
+  return (
+    `${head}: ${cancelStopSummary(r)} — partial output (${r.output.length} chars) ` +
+    `kept in the registry; subagent_check(${id}) returns it once.`
+  );
 }
 
 /** Freeze a live frame into a static snapshot: stop the elapsed clock and fold the open pause into grace. */

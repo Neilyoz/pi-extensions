@@ -97,6 +97,22 @@ describe("buildInboxReminder", () => {
     assert.doesNotMatch(text, /retry hint/);
   });
 
+  test("cancelled row carries the cancel label, not failed", () => {
+    const text = buildInboxReminder([
+      entry({
+        id: "sub-5",
+        state: "failed",
+        snapshot: frame({
+          exitCode: 1,
+          stopReason: "cancelled",
+          elapsedMs: 7_000,
+          errorMessage: "user: wrong direction after review",
+        }),
+      }),
+    ])!;
+    assert.match(text, /— cancelled — user: wrong direction after review \(ran 7s\) —/);
+  });
+
   test("byte-stable: identical state produces identical text", () => {
     const entries = [
       entry({ id: "sub-1", state: "finished", snapshot: frame({ exitCode: 0, elapsedMs: 42_000 }) }),

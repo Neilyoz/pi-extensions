@@ -31,6 +31,7 @@ import {
   createThrottler,
   describeCurrentActivity,
   formatBudgetNote,
+  formatCancelText,
   formatCheckText,
   formatFallbackNote,
   formatTimePart,
@@ -47,6 +48,8 @@ import { renderDelegateCall, renderDelegateResult } from "./render.ts";
 import {
   renderBackgroundDelegateCall,
   renderBackgroundDelegateResult,
+  renderCancelCall,
+  renderCancelResult,
   renderCheckCall,
   renderCheckResult,
   renderWaitCall,
@@ -159,6 +162,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       "",
       "- Use it only when you have your own work this turn (including an ongoing discussion with the user) while the run executes; otherwise let the call block and return the result directly.",
       "- Results are pull-only — no completion event, no notification, nothing wakes you. Dispatching means owning the collection point: finish your own work, then subagent_check(id) for each result. Use subagent_wait(ids) to block until the run finish.",
+      "- Cancel a run you no longer need with subagent_cancel(id) — the child stops and its partial output stays in the registry for subagent_check to collect.",
       "- Background delegation works only in the top-level session.",
     );
   }
@@ -439,7 +443,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_wait",
     label: "Wait for background subagents",
     description:
-      "Block until one or more background subagents (started via subagent_delegate with background: true) finish. Omit ids to wait for ALL current background runs. Returns ONLY each run's final status — one `id (role): finished/failed` line per run, never the results; fetch them afterwards with subagent_check. If timeout_ms elapses before every run finishes, returns an error listing per-run statuses. Cancelling the wait never cancels the runs.",
+      "Block until one or more background subagents (started via subagent_delegate with background: true) finish. Omit ids to wait for ALL current background runs. Returns ONLY each run's final status — one `id (role): finished/failed` line per run, never the results; fetch them afterwards with subagent_check. If timeout_ms elapses before every run finishes, returns an error listing per-run statuses. Cancelling the wait never cancels the runs — to stop a run, use subagent_cancel(id).",
     promptSnippet: "Wait for background subagents to finish",
     parameters: Type.Object({
       ids: Type.Optional(
@@ -546,14 +550,17 @@ export default function subagentExtension(pi: ExtensionAPI) {
       }
 
       // Status line per run — same `id (role): state` shape check uses, so
-      // the model can map ids to roles from wait output alone. Budget-stopped
-      // runs report "finished" but their output is partial — flag it inline.
+      // the model can map ids to roles from wait output alone. Budget stops
+      // report "finished" but their output is partial; cancelled runs keep
+      // their partial output in the registry for check — flag both inline.
       const perId = () =>
         runs
           .map((r) =>
             r.result?.stopReason === "budget_exceeded"
               ? `${r.id} (${r.role}): ${r.state} (budget exceeded — output is partial)`
-              : `${r.id} (${r.role}): ${r.state}`,
+              : r.result?.stopReason === "cancelled"
+                ? `${r.id} (${r.role}): cancelled (partial output kept)`
+                : `${r.id} (${r.role}): ${r.state}`,
           )
           .join("\n");
       if (timedOut) {
@@ -625,6 +632,68 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
     renderCall: renderCheckCall,
     renderResult: renderCheckResult,
+  });
+
+  pi.registerTool({
+    name: "subagent_cancel",
+    label: "Cancel a background subagent",
+    description:
+      "Cancel ONE background subagent run (queued or running): the child process is killed and the run settles as cancelled (its own stop reason, same family as timeout — partial output kept), NOT as a plain failure. The reason is recorded with the run: whoever reads the partial output later via subagent_check sees why it was stopped. Cancelling does not collect — check still returns the partial output once. A finished/failed run cannot be cancelled; check it instead.",
+    promptSnippet: "Cancel a background subagent run",
+    parameters: Type.Object({
+      id: Type.String({ description: "Run id returned by a background delegate call" }),
+      reason: Type.Optional(
+        Type.String({
+          description:
+            "Why the run is no longer needed (a few words suffice). Recorded with the run — whoever reads the partial output later (via subagent_check or history) sees why it was stopped.",
+        }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const run = backgroundRuns.get(params.id);
+      if (!run) {
+        const collected = collectedRuns.get(params.id);
+        if (collected) {
+          throw new Error(
+            `${params.id} (${collected.role}) was already collected — its result is in your conversation history. There is nothing left to cancel.`,
+          );
+        }
+        const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
+        throw new Error(
+          `Unknown subagent id: ${params.id}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
+        );
+      }
+
+      // Terminal runs cannot be cancelled — point at the collector instead.
+      if (run.state === "finished" || run.state === "failed") {
+        const what = run.state === "finished" ? "its result" : "the failure reason and partial output";
+        const text =
+          `${params.id} (${run.role}) already ${run.state} — nothing to cancel. ` +
+          `subagent_check(${params.id}) returns ${what}.`;
+        return {
+          content: [{ type: "text", text }],
+          details: { id: run.id, role: run.role, result: run.snapshot },
+        };
+      }
+
+      // Abort, then wait for the terminal frame: SIGTERM → child cleanup →
+      // cancelled frame carrying the partial output. Bounded by the kill
+      // escalation grace (SIGKILL after 5s), so this await cannot hang.
+      // The reason becomes the terminal errorMessage verbatim — check and
+      // history readers see it prefixed "cancelled — ...".
+      run.abort(params.reason?.trim() || "no longer needed");
+      const result = await run.promise;
+      return {
+        content: [{ type: "text", text: formatCancelText(run.id, run.role, result) }],
+        details: { id: run.id, role: run.role, result },
+      };
+    },
+
+    // Confirmation-only view — the partial output renders only in a check
+    // row (layer contract: cancel intervenes, check fetches).
+    renderCall: renderCancelCall,
+    renderResult: renderCancelResult,
   });
 
   pi.registerCommand("subagent:doctor", {
@@ -752,6 +821,85 @@ export default function subagentExtension(pi: ExtensionAPI) {
         for (const c of collectedRuns.values()) {
           lines.push(`\u2713 ${c.id} (${c.role}): ${c.state} — "${c.task}"`);
         }
+      }
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  pi.registerCommand("subagent:cancel", {
+    description: "Cancel a background subagent run: /subagent:cancel <id|all> [reason]",
+    getArgumentCompletions: (prefix) => {
+      const items: Array<{ value: string; label: string; description?: string }> = [];
+      for (const run of backgroundRuns.values()) {
+        if (run.state === "queued" || run.state === "running") {
+          items.push({ value: run.id, label: run.id, description: `${run.role} — ${run.state}` });
+        }
+      }
+      if (items.length > 1) {
+        items.push({ value: "all", label: "all", description: "cancel every live run" });
+      }
+      const filtered = items.filter((i) => i.value.startsWith(prefix));
+      return filtered.length > 0 ? filtered : null;
+    },
+    handler: async (args, ctx) => {
+      // First token = target (id | all), the rest = free-text reason. Without
+      // a reason the abort reads "cancelled by user"; with one, "cancelled by
+      // user: <reason>" — the agent reading the partial output via check sees
+      // that the user (not the model) stopped the run, and why.
+      const trimmed = args.trim();
+      const spaceIdx = trimmed.indexOf(" ");
+      const target = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+      const reason = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
+
+      if (!target) {
+        const live = [...backgroundRuns.values()]
+          .filter((r) => r.state === "queued" || r.state === "running")
+          .map((r) => `${r.id} (${r.role})`);
+        ctx.ui.notify(
+          `Usage: /subagent:cancel <id|all> [reason]\nLive runs: ${live.length > 0 ? live.join(", ") : "(none)"}`,
+          "info",
+        );
+        return;
+      }
+
+      if (target !== "all" && !backgroundRuns.has(target)) {
+        const collected = collectedRuns.get(target);
+        const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
+        ctx.ui.notify(
+          (collected
+            ? `${target} (${collected.role}) was already collected — nothing to cancel.`
+            : `Unknown subagent id: ${target}.`) +
+            ` Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
+          "error",
+        );
+        return;
+      }
+
+      // "all" targets only live runs; a named id that finished meanwhile is
+      // reported as already-terminal instead of cancelled.
+      const targets =
+        target === "all"
+          ? [...backgroundRuns.values()].filter((r) => r.state === "queued" || r.state === "running")
+          : [backgroundRuns.get(target)!];
+      if (targets.length === 0) {
+        ctx.ui.notify("No live background runs to cancel.", "info");
+        return;
+      }
+
+      const abortReason = reason.trim() ? `user: ${reason.trim()}` : "user";
+      const lines: string[] = [];
+      for (const run of targets) {
+        if (run.state === "finished" || run.state === "failed") {
+          lines.push(`\u2022 ${run.id} (${run.role}) already ${run.state} — nothing to cancel`);
+          continue;
+        }
+        run.abort(abortReason);
+        const result = await run.promise;
+        lines.push(
+          result.usage.turns > 0 || result.output
+            ? `\u2717 ${run.id} (${run.role}): cancelled after ${result.usage.turns} turn${result.usage.turns === 1 ? "" : "s"} — partial output kept (subagent_check / history)`
+            : `\u2717 ${run.id} (${run.role}): cancelled (nothing had run yet)`,
+        );
       }
       ctx.ui.notify(lines.join("\n"), "info");
     },

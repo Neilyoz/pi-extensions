@@ -24,6 +24,7 @@ import { getMarkdownTheme, type ToolDefinition } from "@earendil-works/pi-coding
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type {
   BackgroundDelegateDetails,
+  CancelDetails,
   CheckDetails,
   RunViewEntry,
   SubagentResult,
@@ -31,6 +32,7 @@ import type {
 } from "./types.ts";
 import {
   buildDisplayItems,
+  cancelStopSummary,
   clearElapsedTimer,
   collapsedText,
   contentText,
@@ -265,8 +267,15 @@ export const renderBackgroundDelegateResult: RenderResultFn = (result, { expande
 
 export const renderWaitCall: RenderCallFn = (args, theme) => {
   const ids = ((args as any).ids as string[] | undefined) ?? [];
+  const timeoutMs = ((args as any).timeout_ms as number | undefined) ?? 0;
   const label = ids.length > 0 ? ids.join(", ") : "(all)";
-  const text = theme.fg("toolTitle", theme.bold("subagent_wait ")) + theme.fg("accent", label);
+  // Show the wait ceiling up front — the user should know how long this row
+  // can block before it gives up. Omitted timeout = wait until runs finish.
+  const cap = timeoutMs > 0 ? ` \u2264${Math.max(1, Math.round(timeoutMs / 1000))}s` : "";
+  const text =
+    theme.fg("toolTitle", theme.bold("subagent_wait ")) +
+    theme.fg("accent", label) +
+    (cap ? theme.fg("dim", cap) : "");
   return new Text(text, 0, 0);
 };
 
@@ -322,4 +331,51 @@ export const renderCheckResult: RenderResultFn = (result, { expanded }, theme, _
   // freezes the frame before handing it over).
   if (expanded) return checkEntryExpandedContainer(details.result, fg);
   return collapsedText(checkEntryCollapsedText(details.result, fg));
+};
+
+// ── cancel: confirmation-only view (check is the result-fetcher) ──
+
+export const renderCancelCall: RenderCallFn = (args, theme) => {
+  const id = (args as any).id || "...";
+  const text = theme.fg("toolTitle", theme.bold("subagent_cancel ")) + theme.fg("accent", id);
+  return new Text(text, 0, 0);
+};
+
+export const renderCancelResult: RenderResultFn = (result, { expanded }, theme, _context) => {
+  const details = result.details as CancelDetails | undefined;
+  if (!details) return collapsedText(contentText(result));
+
+  const fg = theme.fg.bind(theme) as Fg;
+  const r = details.result;
+  const head = `${details.id} (${details.role})`;
+  // Confirmation only — the partial output stays in the registry and renders
+  // only in a subagent_check row. Cancel never shows it (layer contract:
+  // delegate = input, wait = process, cancel = intervention, check = result).
+  const line =
+    r.stopReason === "cancelled"
+      ? `${fg("warning", "\u23F9")} ${fg("text", `${head}: ${cancelStopSummary(r)}`)}`
+      : `${fg("muted", "\u2022")} ${fg("dim", `${head} already ${deriveRunState(r)} — nothing to cancel`)}`;
+  if (!expanded) return collapsedText(line);
+
+  const container = new Container();
+  container.addChild(new Text(line, 0, 0));
+  container.addChild(new Spacer(1));
+  if (r.stopReason === "cancelled") {
+    container.addChild(new Text(fg("dim", `reason: ${r.errorMessage || "—"}`), 0, 0));
+    container.addChild(
+      new Text(
+        fg(
+          "dim",
+          `partial output (${r.output.length} chars) kept in the registry — subagent_check(${details.id}) returns it once`,
+        ),
+        0,
+        0,
+      ),
+    );
+  } else {
+    container.addChild(
+      new Text(fg("dim", `subagent_check(${details.id}) returns its result`), 0, 0),
+    );
+  }
+  return container;
 };

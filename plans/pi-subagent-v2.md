@@ -3,8 +3,8 @@
 > v2 = 让主模型能给 running 的 run 发纠偏消息（steer）。前置是 transport 迁移：
 > 现有 `--mode json` 的 stdin 只在启动时读一次，不支持 mid-run 注入，steer 无法
 > 在 json transport 上实现，必须迁 RPC。
-> v1 已交付 cancel（引擎持 AbortController + `RunHandle.cancel()`）——迁移后引擎
-> 侧不变，底层 kill 换 `client.abort()`，第一步的工作不浪费。
+> v1 已交付 cancel（引擎持 AbortController + `RunHandle.abort(reason)`，终态 stopReason
+> `cancelled`）——迁移后引擎侧不变，底层 kill 换 `client.abort()`，第一步的工作不浪费。
 
 ## 调研结论（2026-08-16，读 node_modules/@earendil-works/pi-coding-agent 源码确认）
 
@@ -28,8 +28,8 @@
 - files/context 渠道改造：@file 不支持 → 父进程读文件内容，`<file name="...">` 包装
   内联；大 context 的 temp-file spill 机制可保留（写临时文件再读回内联，或直接内联，
   实测定）
-- cancel 在迁移后简化：engine 侧 AbortController / `cancel()` 不变，底层 kill 换
-  `client.abort()`
+- cancel 在迁移后简化：engine 侧 AbortController / `abort(reason)` 不变，底层 kill
+  换 `client.abort()`
 
 ## subagent_steer
 
