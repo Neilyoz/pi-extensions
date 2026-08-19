@@ -51,7 +51,7 @@ export async function generateSessionName(
   // read the opening exchange, not replay it as conversation history.
   const promptText = exchange.assistant?.trim()
     ? `<user_message>\n${exchange.user}\n</user_message>\n\n<assistant_reply>\n${exchange.assistant}\n</assistant_reply>`
-    : exchange.user;
+    : `<user_message>\n${exchange.user}\n</user_message>`;
 
   // Truncate to avoid wasting tokens on long pastes.
   const truncatedPrompt =
