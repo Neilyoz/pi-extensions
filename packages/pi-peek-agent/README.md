@@ -17,7 +17,7 @@ Ask another instance a question without disturbing its main conversation.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `question` | yes | The question to ask. |
+| `question` | yes | What you want to find out about that instance's session (e.g. `"What are you working on right now?"`). |
 | `at` | no | Target instance name (e.g. `"Fox"`). Omit to auto-pick the other same-project instance. |
 | `sessionId` | no | Pin a specific instance by sessionId (use when names collide). |
 

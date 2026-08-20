@@ -37,15 +37,16 @@ export function registerPeekTool(pi: ExtensionAPI): void {
     name: "peek",
     label: "Peek at another instance",
     description:
-      "Peek at another pi instance — ask it a question without disturbing its main conversation. " +
-      "The peeked instance's main agent is completely unaffected; the answer comes from its side " +
-      "utility model (read-after-burn). Use for cross-instance coordination: check progress, " +
-      "confirm details, ask how something works. Use mesh_list first to discover names.",
-    promptSnippet: "Ask another pi instance a question without disturbing it (cross-instance peek)",
+      "Peek at another pi instance — observe its session without disturbing it. " +
+      "The peer is never notified; the answer is drawn from what that instance has said and done so far. " +
+      "Use for checking progress, confirming details, or asking how something works. " +
+      "Use mesh_list first to discover names.",
+    promptSnippet: "Observe another pi instance's session without disturbing it",
 
     parameters: Type.Object({
       question: Type.String({
-        description: "The question to ask the other instance.",
+        description:
+          "What you want to find out about that instance's session (e.g. 'What are you working on right now?').",
       }),
       at: Type.Optional(
         Type.String({
