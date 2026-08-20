@@ -231,6 +231,33 @@ export async function spawnSubagent(
       "--append-system-prompt",
       `<subagent_env>\nPI_SUBAGENT_TMPDIR=${tmpDir}\nAvailable as $PI_SUBAGENT_TMPDIR in bash. Use for git clone and scratch files.\n</subagent_env>`,
     );
+    // Shared behavioral policy for EVERY subagent run — built-in roles and
+    // agentOverrides customs alike. Role prompts (roles.ts) shape WHAT a role
+    // does; this shapes HOW any subagent behaves when the task exceeds its
+    // actual capabilities: report the gap and stop instead of improvising
+    // workarounds until timeout.
+    args.push(
+      "--append-system-prompt",
+      [
+        "<subagent_policy>",
+        "Before attempting the task, check it against your actual capabilities in this",
+        "session — the tool list here is definitive.",
+        "- If the task needs a capability you do not have (web access, bash, file",
+        "  writes, ...) or material that is not present locally or in the provided",
+        "  context/files, it is out of scope for you. Do NOT improvise workarounds.",
+        '- "Cannot complete" means a capability or material gap — not "difficult" or',
+        '  "uncertain". If it is merely hard, keep working within your tools.',
+        "- When you hit a genuine gap, stop early and return:",
+        "  ## Cannot complete",
+        "  - Missing: the capability or material that is absent",
+        "  - Needed: what would complete the task",
+        "  - Found: partial findings so far (optional)",
+        "",
+        'An early "cannot complete" report is a successful outcome; grinding on',
+        "impossible workarounds until timeout is the failure.",
+        "</subagent_policy>",
+      ].join("\n"),
+    );
 
     // ── Context channel: independent size gate ──
     // Large context spills to @ctx.md (pi auto-wraps in <file>); small context
