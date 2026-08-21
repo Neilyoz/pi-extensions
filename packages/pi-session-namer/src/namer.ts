@@ -11,6 +11,20 @@ import type { SessionNamerConfig } from "./types.ts";
 /** Hard timeout for the naming side agent (ms). A short title needs ~dozens of tokens. */
 const NAMER_TIMEOUT_MS = 10_000;
 
+/** Character budget for the packed exchange, excluding the wrapper tags. */
+const PROMPT_BUDGET_CHARS = 2000;
+
+/**
+ * Truncate a single field to fit the prompt budget, always leaving the XML
+ * wrapper tags closed. Truncating the packed prompt as a whole could cut
+ * inside a tag, leaving it unclosed — models then continue the pattern and
+ * echo the tag instead of summarizing.
+ */
+function truncateField(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  return budget <= 3 ? text.slice(0, budget) : text.slice(0, budget - 3) + "...";
+}
+
 /** The opening exchange used to name a session. */
 export interface NamingExchange {
   user: string;
@@ -48,21 +62,22 @@ export async function generateSessionName(
   const systemPrompt = buildNamerSystemPrompt(config.maxLength);
 
   // Pack the exchange into a single user message: the side agent only needs to
-  // read the opening exchange, not replay it as conversation history.
-  const promptText = exchange.assistant?.trim()
-    ? `<user_message>\n${exchange.user}\n</user_message>\n\n<assistant_reply>\n${exchange.assistant}\n</assistant_reply>`
-    : `<user_message>\n${exchange.user}\n</user_message>`;
-
-  // Truncate to avoid wasting tokens on long pastes.
-  const truncatedPrompt =
-    promptText.length > 2000 ? promptText.slice(0, 2000) + "..." : promptText;
+  // read the opening exchange, not replay it as conversation history. Fields
+  // are truncated individually so the wrapper tags always stay closed.
+  const user = truncateField(exchange.user, PROMPT_BUDGET_CHARS);
+  const assistant = exchange.assistant?.trim()
+    ? truncateField(exchange.assistant, PROMPT_BUDGET_CHARS)
+    : undefined;
+  const promptText = assistant
+    ? `<user_message>\n${user}\n</user_message>\n\n<assistant_reply>\n${assistant}\n</assistant_reply>`
+    : `<user_message>\n${user}\n</user_message>`;
 
   const signal = AbortSignal.timeout(NAMER_TIMEOUT_MS);
   const result = await rolesApi.completeWithRole(
     roleName,
     {
       systemPrompt,
-      messages: [{ role: "user", content: truncatedPrompt, timestamp: Date.now() }],
+      messages: [{ role: "user", content: promptText, timestamp: Date.now() }],
     },
     { signal },
   );

@@ -32,3 +32,25 @@ test("session namer honors small positive hard limits without ellipsis overflow"
   assert.equal(await generatedName(3), "A d");
   assert.equal(await generatedName(4), "A...");
 });
+
+test("session namer keeps wrapper tags closed when truncating long replies", async () => {
+  let captured = "";
+  const rolesApi = {
+    async completeWithRole(_role: string, params: { messages: { content: string }[] }) {
+      captured = params.messages[0].content;
+      return { content: [{ type: "text", text: "Title" }] };
+    },
+  };
+  const config: SessionNamerConfig = { enabled: true, sideAgentRole: "utility", maxLength: 0 };
+  await generateSessionName(rolesApi as any, "utility", config, {
+    user: "Name this session",
+    assistant: "x".repeat(5000),
+  });
+
+  assert.ok(captured.includes("<user_message>"));
+  assert.ok(captured.includes("</user_message>"));
+  assert.ok(captured.includes("<assistant_reply>"));
+  assert.ok(captured.includes("</assistant_reply>"));
+  // Closing tags must appear after their opening counterparts.
+  assert.ok(captured.indexOf("</assistant_reply>") > captured.indexOf("<assistant_reply>"));
+});
