@@ -10,8 +10,9 @@
  *   response headers. Each provider's reset format differs (Go duration,
  *   RFC 3339, epoch seconds, remaining seconds), which is exactly why parsing
  *   is per-provider code rather than a declarative mapping.
- * - api polling — using the provider's own API key (resolved via
- *   modelRegistry.getApiKeyForProvider):
+ * - api polling — using the provider's own API key or OAuth token (resolved via
+ *   the built-in provider context):
+ *   - quota (OpenAI Codex): ChatGPT Codex subscription usage endpoint
  *   - balance (OpenRouter / DeepSeek): prepaid account balance endpoint
  *   - quota (OpenCode Go, Z.AI / Z.AI Coding CN): coding-plan quota endpoint
  */
@@ -111,6 +112,64 @@ function openaiHeaders(h: Headers): QuotaWindow[] | null {
   });
 }
 
+function jsonNum(value: unknown): number | undefined {
+  if (typeof value !== "number" && typeof value !== "string") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Extract the ChatGPT account id required by the Codex backend from its OAuth JWT. */
+function codexAccountId(token: string): string {
+  try {
+    const payloadPart = token.split(".")[1];
+    if (!payloadPart) throw new Error("missing JWT payload");
+    const base64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(payloadPart.length / 4) * 4, "=");
+    const payload = JSON.parse(atob(base64));
+    const accountId = payload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+    if (typeof accountId !== "string" || !accountId) throw new Error("missing account id");
+    return accountId;
+  } catch {
+    throw new Error("invalid OpenAI Codex OAuth token");
+  }
+}
+
+function codexWindow(value: any, period: string): QuotaWindow | undefined {
+  const used = jsonNum(value?.used_percent);
+  if (used === undefined) return undefined;
+  const reset = jsonNum(value?.reset_at);
+  return {
+    period,
+    used,
+    limit: 100,
+    unit: "tokens",
+    resetAt: reset !== undefined ? new Date(reset * 1000) : undefined,
+  };
+}
+
+/**
+ * ChatGPT Codex subscription quota from the undocumented wham usage endpoint.
+ * The OAuth token is resolved on every poll so Pi can refresh it after expiry.
+ */
+async function openaiCodexUsage(
+  resolveApiKey: () => Promise<string | undefined>,
+): Promise<QuotaWindow[]> {
+  const token = await resolveApiKey();
+  if (!token) throw new Error("OpenAI Codex OAuth unavailable");
+  const accountId = codexAccountId(token);
+  const data = await fetchJson(
+    "https://chatgpt.com/backend-api/wham/usage",
+    token,
+    "bearer",
+    { "ChatGPT-Account-Id": accountId },
+  );
+  const rateLimit = data?.rate_limit ?? data?.rateLimit;
+  if (!rateLimit) return [];
+  return [
+    codexWindow(rateLimit.primary_window ?? rateLimit.primaryWindow, "5h"),
+    codexWindow(rateLimit.secondary_window ?? rateLimit.secondaryWindow, "weekly"),
+  ].filter((window): window is QuotaWindow => window !== undefined);
+}
+
 function anthropicHeaders(h: Headers): QuotaWindow[] | null {
   return tokenWindow(h, {
     limit: "anthropic-ratelimit-tokens-limit",
@@ -176,12 +235,14 @@ async function fetchJson(
   url: string,
   apiKey: string,
   auth: "bearer" | "raw" = "bearer",
+  extraHeaders?: Record<string, string>,
 ): Promise<any> {
   const d = await getDispatcher();
   const opts: any = {
     headers: {
       Authorization: auth === "raw" ? apiKey : `Bearer ${apiKey}`,
       Accept: "application/json",
+      ...extraHeaders,
     },
   };
   if (d) opts.dispatcher = d;
@@ -272,7 +333,7 @@ async function zhipuCodingQuota(host: string, apiKey: string): Promise<QuotaWind
 
 export interface BuiltinContext {
   apiKey: string;
-  modelRegistry: any;
+  resolveApiKey: () => Promise<string | undefined>;
 }
 
 export interface BuiltinDef {
@@ -287,6 +348,13 @@ export const BUILTIN_PROVIDERS: BuiltinDef[] = [
     build: () => ({
       kind: "quota", id: "openai", name: "OpenAI", source: "headers",
       parseHeaders: openaiHeaders,
+    }),
+  },
+  {
+    id: "openai-codex",
+    build: ({ resolveApiKey }) => ({
+      kind: "quota", id: "openai-codex", name: "OpenAI Codex", source: "api",
+      fetchUsage: () => openaiCodexUsage(resolveApiKey),
     }),
   },
   {

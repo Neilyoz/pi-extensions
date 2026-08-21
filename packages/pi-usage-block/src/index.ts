@@ -360,7 +360,10 @@ export default function (pi: ExtensionAPI) {
       }
       if (!apiKey) continue;
       try {
-        usageRegistry.register(def.build({ apiKey, modelRegistry: mr }));
+        usageRegistry.register(def.build({
+          apiKey,
+          resolveApiKey: () => mr?.getApiKeyForProvider?.(def.id),
+        }));
         registeredBuiltins.push(def.id);
       } catch {
         // build failed — skip

@@ -39,6 +39,7 @@ The following pi providers are supported out of the box — no extra plugin need
 | Provider | Shows | Data source |
 |----------|-------|-------------|
 | OpenAI | quota % | `x-ratelimit-*-tokens` response headers |
+| OpenAI Codex | quota % | `GET chatgpt.com/backend-api/wham/usage` |
 | Anthropic | quota % | `anthropic-ratelimit-tokens-*` response headers |
 | xAI (Grok) | quota % | `x-ratelimit-*-tokens` response headers |
 | Cerebras | quota % | `x-ratelimit-*-tokens-minute` response headers |
@@ -49,7 +50,7 @@ The following pi providers are supported out of the box — no extra plugin need
 | Z.AI | quota % | `GET api.z.ai/api/monitor/usage/quota/limit` |
 | Z.AI Coding CN | quota % | `GET open.bigmodel.cn/api/monitor/usage/quota/limit` |
 
-> **Not supported:** Google Gemini and Mistral don't surface response headers in pi's call path. Groq's rate-limit headers are undocumented/unstable, and Fireworks only exposes limit (no remaining/reset).
+> **Notes:** OpenAI Codex uses the ChatGPT OAuth credential and an undocumented ChatGPT backend usage endpoint; it is separate from the public OpenAI API-key provider. Google Gemini and Mistral don't surface response headers in pi's call path. Groq's rate-limit headers are undocumented/unstable, and Fireworks only exposes limit (no remaining/reset).
 
 ## Configuration
 
