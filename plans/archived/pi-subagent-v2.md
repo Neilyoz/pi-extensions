@@ -59,3 +59,26 @@
 - nested run 的 steer（worker 纠偏自己的 explorer）——worker 模型阻塞在 delegate
   调用中，无法发起
 - view 面板内选中 run 发 steer 的 UI 入口——模型侧工具先行，用户侧 UI 再评估
+
+## 交付记录（2026-08-23）
+
+计划主体已交付（transport 迁 RPC + subagent_steer + view 面板），commit 003c9a3。
+与计划的偏差及理由：
+
+- **未引入 RpcClient**：用裸 spawn + `--mode rpc` 的 JSONL stdin/stdout 直连。
+  现有事件解析逻辑原样复用，少一层客户端抽象；代价是 abort 未换
+  `client.abort()`，cancel 仍走 SIGTERM→SIGKILL kill 链路（实测可用）。
+- **activityLog kind 命名**：计划的 `"userMessage"` 落地为 `"steer"`——feed 里
+  它和 thinking/toolCall/text 并列，名字跟机制对齐比跟来源对齐清楚。
+- **view 面板从"不做/后续"提前落地**（issue #5）：居中 overlay、标签页切换焦点
+  run、连续 append-only 列表、running 条目省略号动画、底部输入框 steer；
+  steer 目标跟随焦点 run。
+- **计划外发现的关键坑**：RPC 模式是常驻服务（rpc-mode.js 结尾
+  `return new Promise(() => {})`），任务完成不会退出——必须在收到 `agent_end`
+  后主动关闭父进程侧 stdin，子进程的 onInputEnd 才会触发优雅退出。
+- **spike 清单的实测结论**：`--tools`/`--append-system-prompt`/`--thinking`
+  经 argv 透传在 RPC 模式全部生效；@file argv 确认不支持（main.js 显式报错），
+  files/context 改为父进程读文件后以 `<file name="...">` 内联进初始 prompt，
+  spill-to-tmpfile 机制随之删除（stdin 无 argv 长度限制）。
+
+后续可评估：followUp（链式任务）、nested run 的 steer。
