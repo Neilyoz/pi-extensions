@@ -45,6 +45,7 @@ import {
 import { startSubagentRun, type RunHandle } from "./run.ts";
 import { buildInboxReminder, injectReminder } from "./reminder.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
+import { createViewPanel } from "./view.ts";
 import {
   renderBackgroundDelegateCall,
   renderBackgroundDelegateResult,
@@ -635,6 +636,57 @@ export default function subagentExtension(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "subagent_steer",
+    label: "Steer a running background subagent",
+    description:
+      "Queue a mid-run correction into ONE running background subagent — typically right after subagent_check showed it heading down a wrong path. The message is delivered after the child finishes its current tool batch, before its next LLM call; the run keeps its progress (unlike cancel). Only running runs accept steering; queued runs reject it, and terminal runs are collected by check instead. Typical flow: check → steer → check again later.",
+    promptSnippet: "Send a mid-run correction to a background subagent",
+    parameters: Type.Object({
+      id: Type.String({ description: "Run id returned by a background delegate call" }),
+      message: Type.String({
+        description:
+          "The correction. Concise and imperative — it lands mid-run, between the child's turns.",
+      }),
+    }),
+
+    async execute(_toolCallId, params) {
+      const run = backgroundRuns.get(params.id);
+      if (!run) {
+        const collected = collectedRuns.get(params.id);
+        if (collected) {
+          throw new Error(
+            `${params.id} (${collected.role}) was already collected — nothing left to steer. Delegate a new run if a correction is still needed.`,
+          );
+        }
+        const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
+        throw new Error(
+          `Unknown subagent id: ${params.id}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
+        );
+      }
+      if (run.state === "queued") {
+        throw new Error(
+          `${params.id} (${run.role}) is still queued for a concurrency slot — steer once it is running.`,
+        );
+      }
+      if (run.state !== "running") {
+        throw new Error(
+          `${params.id} (${run.role}) is ${run.state} — only running runs can be steered. subagent_check(${params.id}) returns its result.`,
+        );
+      }
+      run.steer(params.message);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Steer queued for ${params.id} (${run.role}) — delivered after its current tool batch. Verify the effect with subagent_check later.`,
+          },
+        ],
+        details: { id: params.id, role: run.role },
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "subagent_cancel",
     label: "Cancel a background subagent",
     description:
@@ -694,6 +746,38 @@ export default function subagentExtension(pi: ExtensionAPI) {
     // row (layer contract: cancel intervenes, check fetches).
     renderCall: renderCancelCall,
     renderResult: renderCancelResult,
+  });
+
+  pi.registerCommand("subagent:view", {
+    description: "Open the live subagent activity view (watch progress, steer runs)",
+    handler: async (_args, ctx) => {
+      // Union of every known run: background registry (until collected) plus
+      // live in-flight runs (foreground delegate calls included). Dedupe by id —
+      // background runs appear in both.
+      const runsProvider = () => {
+        const seen = new Set<string>();
+        const out: RunHandle[] = [];
+        for (const r of [...backgroundRuns.values(), ...liveRuns]) {
+          if (!seen.has(r.id)) {
+            seen.add(r.id);
+            out.push(r);
+          }
+        }
+        return out;
+      };
+      if (runsProvider().length === 0) {
+        ctx.ui.notify("No subagent runs yet.", "info");
+        return;
+      }
+      await ctx.ui.custom(
+        (tui, theme, _keybindings, done) =>
+          createViewPanel(runsProvider, tui, theme, () => done(undefined)),
+        {
+          overlay: true,
+          overlayOptions: { anchor: "center", width: "90%", maxHeight: "85%" },
+        },
+      );
+    },
   });
 
   pi.registerCommand("subagent:doctor", {

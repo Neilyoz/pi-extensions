@@ -113,13 +113,19 @@ export type DisplayItem =
   | { type: "toolCall"; name: string; args: Record<string, any>; status?: ToolStatus }
   | { type: "thinking"; status?: ToolStatus };
 
-/** Map the real-time activity log into renderable display items (in order). */
+/**
+ * Map the real-time activity log into renderable display items (in order).
+ * Streamed-text entries are excluded — they are the :view overlay's exclusive
+ * content; the inline tool rows stay as they were.
+ */
 export function buildDisplayItems(activityLog: ActivityEntry[]): DisplayItem[] {
-  return activityLog.map((a) =>
-    a.kind === "thinking"
-      ? { type: "thinking", status: a.status }
-      : { type: "toolCall", name: a.toolName ?? "?", args: a.args ?? {}, status: a.status },
-  );
+  return activityLog
+    .filter((a) => a.kind === "thinking" || a.kind === "toolCall")
+    .map((a) =>
+      a.kind === "thinking"
+        ? { type: "thinking", status: a.status }
+        : { type: "toolCall", name: a.toolName ?? "?", args: a.args ?? {}, status: a.status },
+    );
 }
 
 export function shortenPath(p: string): string {
@@ -483,6 +489,8 @@ export function describeCurrentActivity(r: { activityLog: ActivityEntry[] }): st
   const last = r.activityLog[r.activityLog.length - 1];
   if (!last) return "waiting for first event";
   if (last.kind === "thinking") return last.status === "running" ? "thinking" : "thought";
+  if (last.kind === "text") return last.status === "running" ? "responding" : "responded";
+  if (last.kind === "steer") return "steered — awaiting next turn";
   return formatToolCall(last.toolName ?? "?", last.args ?? {}, (_color, text) => text);
 }
 

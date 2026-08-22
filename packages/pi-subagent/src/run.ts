@@ -24,6 +24,7 @@ import type {
   FallbackFrom,
   RunState,
   SubagentConfig,
+  SubagentControl,
   SubagentResult,
   SubagentRole,
 } from "./types.ts";
@@ -59,6 +60,8 @@ export interface RunHandle {
   readonly promise: Promise<SubagentResult>;
   /** Abort the run — no-op after settle. Tool-cancellation and session-shutdown reaping both funnel here. */
   abort(reason?: string): void;
+  /** Queue a steering message into the running child (RPC stdin). No-op when queued/settled. */
+  steer(message: string): void;
   /** Get notified on every frame change. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;
 }
@@ -114,6 +117,8 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
   let result: SubagentResult | undefined;
   let thrown: Error | undefined;
   let settled = false;
+  /** Live stdin channel of the current spawn attempt (replaced on fallback retry). */
+  let control: SubagentControl | undefined;
   let abortReason: string | undefined;
   const controller = new AbortController();
   const onCallerAbort = () => controller.abort();
@@ -180,6 +185,10 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
       if (settled) return;
       if (reason) abortReason = reason;
       controller.abort();
+    },
+    steer(message: string) {
+      if (settled || currentState !== "running") return;
+      control?.steer(message);
     },
     promise,
   };
@@ -291,6 +300,9 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         depth: opts.depth,
         signal: controller.signal,
         onProgress: emitProgress,
+        onControl: (c) => {
+          control = c;
+        },
       });
 
       // Retry with fallback role on provider errors (quota, auth, timeout, etc.)
@@ -323,6 +335,9 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
             depth: opts.depth,
             signal: controller.signal,
             onProgress: emitProgress,
+            onControl: (c) => {
+              control = c;
+            },
           });
           runResult.fallbackFrom = fallbackFrom;
         }

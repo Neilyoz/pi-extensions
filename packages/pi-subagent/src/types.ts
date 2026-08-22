@@ -74,15 +74,23 @@ export interface SubagentRole {
 /** Status of an individual tool call within a subagent run. */
 export type ToolStatus = "running" | "done" | "failed";
 
-/** A single entry in the real-time activity log (thinking block or tool call). */
+/** A single entry in the real-time activity log (thinking block, tool call, streamed assistant text, or a user steer). */
 export interface ActivityEntry {
-  kind: "thinking" | "toolCall";
-  /** Synthetic id (thinking-N) or the toolCallId from the event stream. */
+  kind: "thinking" | "toolCall" | "text" | "steer";
+  /** Synthetic id (thinking-N / text-N / steer-N) or the toolCallId from the event stream. */
   id: string;
   status: ToolStatus;
   /** Tool name + args (toolCall only). */
   toolName?: string;
   args?: Record<string, any>;
+  /** Accumulated streamed assistant text or the injected steer message (kinds "text"/"steer"). Grows in place until message_end freezes text entries. */
+  text?: string;
+}
+
+/** Live control channel into a spawned child process (wired to the RPC stdin). */
+export interface SubagentControl {
+  /** Queue a steering message — delivered after the child's current tool batch, before its next LLM call. No-op after the process exits. */
+  steer(message: string): void;
 }
 
 /** Usage statistics from a subagent execution. */
