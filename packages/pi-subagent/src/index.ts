@@ -57,6 +57,8 @@ import {
   renderWaitResult,
 } from "./render-async.ts";
 
+const BACKGROUND_COMPLETION_MESSAGE_TYPE = "subagent-completion";
+
 // ── Extension entry ────────────────────────────────────────────────
 
 export default function subagentExtension(pi: ExtensionAPI) {
@@ -107,6 +109,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
   const backgroundRuns = new Map<string, RunHandle>();
   const collectedRuns = new Map<string, CollectedRun>();
   let runCounter = 0;
+  let sessionGeneration = 0;
 
   // ── Live-run reaping ─────────────────────────────────────────
   // Every in-flight run (foreground and background alike), removed once
@@ -162,7 +165,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       "BACKGROUND DELEGATION:",
       "",
       "- Use it only when you have your own work this turn (including an ongoing discussion with the user) while the run executes; otherwise let the call block and return the result directly.",
-      "- Results are pull-only — no completion event, no notification, nothing wakes you. Dispatching means owning the collection point: finish your own work, then subagent_check(id) for each result. Use subagent_wait(ids) to block until the run finish.",
+      "- Results are pull-only for the model — a completion notice is shown to the user, but nothing wakes you or delivers the result. Dispatching means owning the collection point: finish your own work, then subagent_check(id) for each result. Use subagent_wait(ids) to block until the run finish.",
       "- Cancel a run you no longer need with subagent_cancel(id) — the child stops and its partial output stays in the registry for subagent_check to collect.",
       "- Background delegation works only in the top-level session.",
     );
@@ -189,6 +192,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
   rebuildGuidelines(availableRoles);
 
   pi.on("session_start", async (_event, ctx) => {
+    sessionGeneration += 1;
     config = loadSubagentConfig(ctx.cwd);
     concurrencyGate = new AsyncSemaphore(config.maxConcurrency);
 
@@ -220,12 +224,21 @@ export default function subagentExtension(pi: ExtensionAPI) {
   });
 
   pi.on("context", async (event) => {
+    // Completion notices are persisted custom messages so the user can see
+    // them in the transcript, but they are deliberately UI-only. Keep the
+    // model on the reminder/check path instead of duplicating the notice in
+    // its context.
+    const messages = event.messages.filter(
+      (message) =>
+        message.role !== "custom" || message.customType !== BACKGROUND_COMPLETION_MESSAGE_TYPE,
+    );
+
     // The model's inbox: every unclaimed background run, injected at a
-    // cache-stable head position before every provider call. Empty inbox →
-    // zero injection (context untouched, cache fully stable).
+    // cache-stable head position before every provider call. Empty inbox and
+    // no filtered notices → context stays untouched, cache fully stable.
     const reminder = buildInboxReminder(backgroundRuns.values());
-    if (!reminder) return;
-    return { messages: injectReminder(event.messages, reminder) };
+    if (!reminder && messages.length === event.messages.length) return;
+    return { messages: reminder ? injectReminder(messages, reminder) : messages };
   });
 
   pi.on("tool_result", (event) => {
@@ -243,6 +256,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
   // runs are audited to history, gates release. Without this, background
   // children would burn tokens as unwaitable orphans after /reload or /new.
   pi.on("session_shutdown", () => {
+    sessionGeneration += 1;
     for (const run of liveRuns) run.abort("session shutdown");
   });
 
@@ -275,7 +289,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       background: Type.Optional(
         Type.Boolean({
           description:
-            "Non-blocking: returns an id immediately so you can do your own work (or keep discussing with the user) while the run executes — not for parallelism (several foreground calls in one turn already run concurrently). Results are pull-only: nothing delivers them to you or wakes you; fetch with subagent_wait/subagent_check when your own work is done. If the next thing you'd do is wait for the result, omit this and let the call block.",
+            "Non-blocking: returns an id immediately so you can do your own work (or keep discussing with the user) while the run executes — not for parallelism (several foreground calls in one turn already run concurrently). Results are pull-only for the model: a completion notice is shown to the user, but nothing delivers the result or wakes you; fetch with subagent_wait/subagent_check when your own work is done. If the next thing you'd do is wait for the result, omit this and let the call block.",
         }),
       ),
       cwd: Type.Optional(Type.String({ description: "Working directory (defaults to current)" })),
@@ -339,6 +353,34 @@ export default function subagentExtension(pi: ExtensionAPI) {
       // ── Background: return the id immediately; the pipeline keeps running. ──
       if (params.background) {
         backgroundRuns.set(run.id, run);
+        const runGeneration = sessionGeneration;
+        void run.promise.then((result) => {
+          // A collected run already has a visible check result. Do not emit a
+          // second notice, and never publish completions from an old session.
+          if (!backgroundRuns.has(run.id) || runGeneration !== sessionGeneration) return;
+
+          const outcome = isFailedResult(result)
+            ? "failed"
+            : result.stopReason === "cancelled"
+              ? "cancelled"
+              : "finished";
+          const detail =
+            outcome === "failed"
+              ? result.errorMessage || result.stderr
+              : outcome === "cancelled"
+                ? result.errorMessage
+                : result.summary;
+          const detailText = detail?.trim() ? ` — ${taskPreview(detail)}` : "";
+          pi.sendMessage(
+            {
+              customType: BACKGROUND_COMPLETION_MESSAGE_TYPE,
+              content: `Background subagent ${run.id} (${run.role}) ${outcome}: "${taskPreview(run.task)}"${detailText}`,
+              display: true,
+              details: { id: run.id, role: run.role, outcome },
+            },
+            { triggerTurn: false },
+          );
+        });
         return {
           content: [
             { type: "text", text: `Background subagent started — id: ${run.id} (${params.role}).` },

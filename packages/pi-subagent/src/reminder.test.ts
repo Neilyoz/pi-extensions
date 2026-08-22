@@ -129,7 +129,7 @@ describe("buildInboxReminder", () => {
 
   test("header explains pull-only collection semantics", () => {
     const text = buildInboxReminder([entry({ id: "sub-1", state: "running" })])!;
-    assert.match(text, /^\[background subagent runs — results are pull-only/);
+    assert.match(text, /^\[background subagent runs — results are pull-only for the model/);
     assert.match(text, /already collected\]/);
   });
 });
