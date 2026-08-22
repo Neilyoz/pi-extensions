@@ -1,10 +1,11 @@
 /**
  * Spawn a pi child process and collect structured output with real-time progress.
  *
- * Uses pi's --mode json to get a JSON event stream. Fires onProgress on each
- * event for streaming TUI updates; the message stream is parsed for
- * usage/output extraction, with thinking blocks and tool calls mirrored into
- * the activity log for rendering.
+ * Uses pi's --mode rpc: the child streams agent events on stdout and accepts
+ * JSON commands on stdin (initial prompt, mid-run steering). Fires onProgress
+ * on each event for streaming TUI updates; the message stream is parsed for
+ * usage/output extraction, with thinking blocks, tool calls, and streamed
+ * assistant text mirrored into the activity log for rendering.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -12,10 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SubagentMessage, SubagentResult } from "./types.ts";
-
-/** Max chars for an inline channel block (context or task) before it spills to a temp @file. */
-const INLINE_LIMIT = 8000;
+import type { SubagentControl, SubagentMessage, SubagentResult } from "./types.ts";
 
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 
@@ -134,6 +132,36 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 }
 
 /**
+ * Compose the initial RPC prompt message: reference files as <file> blocks,
+ * then context and task as structured tags — the same shape the child saw in
+ * json mode (@file arguments wrapped by pi's processFileArguments, followed by
+ * the inline message body).
+ *
+ * @internal — exported for testing.
+ */
+export async function composeInitialMessage(
+  files: string[] | undefined,
+  context: string | undefined,
+  task: string,
+): Promise<string> {
+  const parts: string[] = [];
+  if (files) {
+    for (const f of files) {
+      let content: string;
+      try {
+        content = await fs.promises.readFile(f, "utf-8");
+      } catch {
+        content = `(failed to read file: ${f})`;
+      }
+      parts.push(`<file name="${f}">\n${content}\n</file>`);
+    }
+  }
+  if (context?.trim()) parts.push(`<context>\n${context}\n</context>`);
+  if (task.trim()) parts.push(`<task>\n${task}\n</task>`);
+  return parts.join("\n\n");
+}
+
+/**
  * Spawn a pi child process with the given model and configuration.
  * Fires onProgress on each JSON event for streaming TUI updates.
  *
@@ -153,7 +181,7 @@ export async function spawnSubagent(
     systemPrompt?: string;
     /** Extra context delivered as a separate channel from the task. */
     context?: string;
-    /** Reference file paths injected as independent @file args (child reads them directly). */
+    /** Reference files injected as <file> blocks in the initial prompt (child reads them directly). */
     contextFiles?: string[];
     subagentRoles?: string[];
     timeoutMs?: number;
@@ -164,6 +192,8 @@ export async function spawnSubagent(
     maxCost?: number;
     signal?: AbortSignal;
     onProgress?: (update: Partial<SubagentResult>) => void;
+    /** Called once the child process exists — exposes the stdin steering channel. */
+    onControl?: (control: SubagentControl) => void;
   },
 ): Promise<SubagentResult> {
   const result: SubagentResult = {
@@ -202,8 +232,9 @@ export async function spawnSubagent(
   let tmpDir: string | null = null;
 
   try {
-    // Build CLI args
-    const args: string[] = ["--mode", "json", "--no-session", "--model", modelRef];
+    // Build CLI args. RPC mode (not json): stdin carries the initial prompt and
+    // mid-run steering commands; stdout streams the same agent events.
+    const args: string[] = ["--mode", "rpc", "--no-session", "--model", modelRef];
 
     if (options.thinking) {
       args.push("--thinking", options.thinking);
@@ -213,8 +244,9 @@ export async function spawnSubagent(
       args.push("--tools", options.tools.join(","));
     }
 
-    // Temp dir for: large-context/task spill files, and as PI_SUBAGENT_TMPDIR
-    // for subagent bash work (e.g. git clone).
+    // Scratch dir handed to the child as PI_SUBAGENT_TMPDIR for its bash work
+    // (e.g. git clone). The initial prompt goes over stdin, so there is no
+    // argv length limit and no spill-to-tempfile channel anymore.
     tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
 
     // ── System prompt channel: inline text via --append-system-prompt ──
@@ -259,52 +291,13 @@ export async function spawnSubagent(
       ].join("\n"),
     );
 
-    // ── Context channel: independent size gate ──
-    // Large context spills to @ctx.md (pi auto-wraps in <file>); small context
-    // inlines as a structured <context> tag. Decoupled from the task gate so a
-    // large context never drags a short task into a spill file.
-    let contextInline = false;
-    if (options.context && options.context.trim()) {
-      if (options.context.length > INLINE_LIMIT) {
-        const ctxPath = path.join(tmpDir, "context.md");
-        await fs.promises.writeFile(ctxPath, options.context, { encoding: "utf-8", mode: 0o600 });
-        args.push(`@${ctxPath}`);
-      } else {
-        contextInline = true;
-      }
-    }
-
-    // ── Reference files channel: each as an independent @ argument ──
-    // pi reads each and wraps in <file name="...">. Content never enters the
-    // parent model's context — the child reads it directly.
-    if (options.contextFiles) {
-      for (const f of options.contextFiles) {
-        args.push(`@${f}`);
-      }
-    }
-
-    // ── Task channel: always inline, always the final block ──
-    // The task is an instruction, not reference material — it stays inline so the
-    // child sees it as the primary directive. A pathologically long task spills.
-    let taskInline = true;
-    if (task.length > INLINE_LIMIT) {
-      const taskPath = path.join(tmpDir, "task.md");
-      await fs.promises.writeFile(taskPath, task, { encoding: "utf-8", mode: 0o600 });
-      args.push(`@${taskPath}`);
-      taskInline = false;
-    }
-
-    // ── Compose the message body (inline context + task) ──
-    // @file args are injected by pi BEFORE this message (buildInitialMessage),
-    // so the final shape the child sees is:
-    //   [<file>...spilled context / reference files...</file>]
-    //   [<context>...inline context...</context>]
-    //   [<task>...task...</task>]
-    const messageParts: string[] = [];
-    if (contextInline) messageParts.push(`<context>\n${options.context}\n</context>`);
-    if (taskInline) messageParts.push(`<task>\n${task}\n</task>`);
-    const message = messageParts.join("\n\n");
-    if (message) args.push(message);
+    // ── Initial prompt channel: one RPC prompt command over stdin ──
+    // RPC mode rejects @file argv, so reference files are inlined here as
+    // <file name="..."> blocks — the same wrap pi applies to @file arguments
+    // (processFileArguments). Content still never enters the parent model's
+    // context; this process reads the bytes off disk and pipes them straight
+    // to the child.
+    const initialMessage = await composeInitialMessage(options.contextFiles, options.context, task);
 
     // Spawn process
     const invocation = getPiInvocation(args);
@@ -312,6 +305,15 @@ export async function spawnSubagent(
     let budgetExceeded = false;
     let wasTimeout = false;
     let buffer = "";
+
+    /** Serialize one JSONL command frame for the child's stdin. */
+    const sendCommand = (command: Record<string, unknown>): void => {
+      try {
+        proc?.stdin?.write(`${JSON.stringify(command)}\n`);
+      } catch {
+        /* child gone — nothing to steer */
+      }
+    };
 
     const emitProgress = () => {
       options.onProgress?.({
@@ -326,8 +328,17 @@ export async function spawnSubagent(
     };
 
     let thinkingCounter = 0;
+    let textCounter = 0;
     // O(1) lookup from toolCallId → activityLog index.
     const toolCallIndex = new Map<string, number>();
+
+    // Streamed text deltas bypass the per-event emitProgress (copying the whole
+    // activityLog per token is quadratic); a time gate keeps live frames fresh
+    // enough for the :view overlay without flooding the frame pipeline.
+    let lastDeltaEmit = 0;
+    const DELTA_EMIT_INTERVAL_MS = 200;
+
+    let steerCounter = 0;
 
     // Normalized turn/cost budgets (0 = unlimited). Role overrides can arrive
     // raw from settings.json, so negatives/non-finites normalize here.
@@ -351,6 +362,21 @@ export async function spawnSubagent(
         event = JSON.parse(line);
       } catch {
         return;
+      }
+
+      // RPC command acknowledgements ("response" lines) carry no agent state.
+      if (event.type === "response") return;
+
+      // RPC mode is a resident server: after the task completes (agent_end) the
+      // process would idle forever waiting for more stdin commands. We run one
+      // prompt per child, so ending our stdin side triggers its graceful
+      // shutdown (onInputEnd → runtime dispose → exit).
+      if (event.type === "agent_end") {
+        try {
+          proc?.stdin?.end();
+        } catch {
+          /* already gone */
+        }
       }
 
       if (event.type === "message_end" && event.message) {
@@ -385,6 +411,7 @@ export async function spawnSubagent(
           checkBudget();
         }
 
+        freezeRunningTextEntries();
         emitProgress();
       }
 
@@ -444,6 +471,38 @@ export async function spawnSubagent(
             }
           }
           emitProgress();
+        } else if (aev.type === "text_start") {
+          result.activityLog.push({
+            kind: "text",
+            id: `text-${textCounter++}`,
+            status: "running",
+            text: "",
+          });
+          emitProgress();
+        } else if (aev.type === "text_delta" && aev.delta) {
+          // Append to the still-running text entry; skip the frame copy per token.
+          for (let i = result.activityLog.length - 1; i >= 0; i--) {
+            const entry = result.activityLog[i];
+            if (entry.kind === "text" && entry.status === "running") {
+              entry.text = (entry.text ?? "") + aev.delta;
+              break;
+            }
+            if (entry.kind === "text") break;
+          }
+          const now = Date.now();
+          if (now - lastDeltaEmit >= DELTA_EMIT_INTERVAL_MS) {
+            lastDeltaEmit = now;
+            emitProgress();
+          }
+        }
+      }
+    };
+
+    /** Freeze every still-running text entry — called on message_end (turn boundary). */
+    const freezeRunningTextEntries = () => {
+      for (const entry of result.activityLog) {
+        if (entry.kind === "text" && entry.status === "running") {
+          entry.status = "done";
         }
       }
     };
@@ -555,11 +614,33 @@ export async function spawnSubagent(
         cwd: options.cwd,
         env: childEnv,
         shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
       proc = p;
       liveChildren.add(p);
       reapChildrenOnExit();
+
+      // Expose the stdin control channel (steering) to the owner. Writes are
+      // fire-and-forget: once the child is gone the try/catch in sendCommand
+      // swallows EPIPE.
+      options.onControl?.({
+        steer(message: string) {
+          if (processExited || terminationRequested) return;
+          sendCommand({ type: "steer", message });
+          // Mirror the steer into the activity feed so the :view overlay shows
+          // what was injected and when.
+          result.activityLog.push({
+            kind: "steer",
+            id: `steer-${steerCounter++}`,
+            status: "done",
+            text: message,
+          });
+          emitProgress();
+        },
+      });
+
+      // Kick off the run: RPC mode starts idle and waits for a prompt command.
+      sendCommand({ id: "init", type: "prompt", message: initialMessage });
 
       p.stdout.on("data", (data: Buffer) => {
         buffer += data.toString();

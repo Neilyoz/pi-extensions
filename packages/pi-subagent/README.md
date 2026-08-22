@@ -2,7 +2,7 @@
 
 Role-based subagent orchestration for [pi](https://github.com/earendil-works/pi).
 
-Provides a `subagent_delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries. Runs can be foreground (blocking) or background (asynchronous, collected later via `subagent_wait`/`subagent_check`, cancellable via `subagent_cancel`).
+Provides a `subagent_delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries. Runs can be foreground (blocking) or background (asynchronous, collected later via `subagent_wait`/`subagent_check`, cancellable via `subagent_cancel`). A centered live view (`/subagent:view`) shows every run's activity feed as it happens, and mid-run corrections can be queued into a running subagent from the view's input box or via `subagent_steer`.
 
 ## Design Philosophy
 
@@ -23,7 +23,7 @@ This means:
 
 1. Main model calls the `subagent_delegate` tool with a role and task description
 2. The extension resolves the role to a model via pi-model-roles
-3. Spawns an isolated pi child process with the configured model, tools, and system prompt
+3. Spawns an isolated pi child process in RPC mode (`--mode rpc`) with the configured model, tools, and system prompt — agent events stream back over stdout while stdin carries the initial prompt and mid-run steering commands
 4. **Real-time TUI progress** shows tool calls, turns, and elapsed time as the subagent runs
 5. After completion, an **AI-generated one-line summary** is produced for compact display
 6. Returns the result to the main model with usage statistics (turns, tokens, cost)
@@ -54,9 +54,18 @@ This means:
 
 | Command | Description |
 |---------|-------------|
+| `/subagent:view` | Open the live view: a tabbed overlay showing one run's full activity feed at a time, with an input box to steer the focused run |
 | `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, and role references |
 | `/subagent:status` | List background runs (active + collected) and their current state |
 | `/subagent:cancel <id\|all> [reason]` | Cancel a live background run (or every live run); the optional reason is recorded with the run |
+
+### Live view (`/subagent:view`)
+
+A centered overlay covering most of the screen. A tab row across the top lists every run (icon · id · role); `Tab` cycles the focused run, and the rest of the viewport belongs to it alone — its complete activity feed, tail-capped to the visible area with a `⋮ earlier activity` marker when older entries roll off.
+
+The feed itself is a continuous, append-only list: each entry is static text with a state icon, and the only animated thing is the ellipsis on a running entry (`.` → `..` → `...`). Finishing freezes an entry in place — its position never changes, only the icon flips. Streamed assistant text grows in place as the run's last line and settles into plain terminal-colored text at the turn boundary. Both foreground and background runs appear here; a foreground run stays listed while its delegate call blocks the main agent.
+
+Below the feed sits a steer input box: type a correction and press Enter to queue it into the focused run (only while it is running). The message appears immediately in the feed as an `↩ steer:` entry and is delivered to the child after its current tool batch, before its next LLM call — the run keeps its progress. `Esc` closes the overlay.
 
 ## Dependencies
 
@@ -182,13 +191,14 @@ Three execution properties, kept separate:
 
 - **Foreground** (default): the call blocks until the run finishes and returns the final output directly. (Under the hood foreground and background share one async run engine — foreground is simply background-but-blocking.)
 - **Parallel**: multiple `subagent_delegate` calls in one turn run concurrently — foreground and background alike, no special flag.
-- **Background** (`background: true`): non-blocking — `subagent_delegate` returns immediately with a run id. Use it when you have your own work to do (or a discussion with the user to continue) while the run executes; three companion tools manage the outcome:
+- **Background** (`background: true`): non-blocking — `subagent_delegate` returns immediately with a run id. Use it when you have your own work to do (or a discussion with the user to continue) while the run executes; four companion tools manage the outcome:
 
 | Tool | Purpose | Returns to the model |
 |------|---------|---------------------|
 | `subagent_delegate(background: true)` | Start an async run | Just the id (`sub-N`) |
 | `subagent_wait(ids?, timeout_ms?)` | Block until **all** listed runs finish (omit `ids` for all current background runs) | Statuses only, one `id (role): finished/failed` line per run — never results; errors when the timeout hits with runs unfinished |
 | `subagent_check(id)` | One-shot snapshot of a single run | `queued` / `running` + current activity / the **full output** once finished / failure reason + partial output. Checking a terminal run **collects** it: the output is returned once and the run leaves the registry |
+| `subagent_steer(id, message)` | Queue a mid-run correction into one running run (typically right after a check revealed it heading down a wrong path) | Confirmation that the steer is queued — delivered after the child's current tool batch, before its next LLM call; the run keeps its progress |
 | `subagent_cancel(id, reason?)` | Kill one live (queued/running) run | Confirmation with the partial-output size — the run settles as `cancelled` (warning styling, same family as timeout/budget) with the reason in its error message; the partial output stays in the registry for `subagent_check` to collect |
 
 Typical flow:
@@ -220,6 +230,17 @@ Semantics worth knowing:
 - **Top-level only:** nested subagents cannot delegate in the background (a subagent process exits when its task finishes, which would orphan the run).
 - The run registry lives in the pi process: a `/reload` or restart orphans in-flight background runs (their ids stop resolving). `/subagent:status` lists every registered run (active + collected) and its current state.
 
+### Steering a running subagent
+
+Steering queues a correction into a running subagent without killing it — the middle ground between waiting it out and cancelling. The message is delivered after the child finishes its current tool batch, before its next LLM call, so the run keeps its progress and can change course. It is a suggestion injected between turns, not an interrupt: the child may comply immediately, finish what it was doing first, or ignore poor instructions entirely — to actually stop a run, cancel it.
+
+There are two channels into the same mechanism:
+
+- **The model** calls `subagent_steer(id, message)` — typically right after a `subagent_check` snapshot revealed the run heading down a wrong path (check → steer → check again later).
+- **The user** types into the input box of `/subagent:view`, targeting the focused run. Every accepted steer also appears in the run's activity feed as an `↩ steer:` entry, so whoever watches the view sees what was injected and when.
+
+Queued steers are visible in neither wait nor check results — they shape the run's subsequent behavior, not its transcript.
+
 ### Background TUI display
 
 Each tool row renders one aspect of the same decomposition the foreground row shows all at once (input · process · result · usage):
@@ -245,7 +266,7 @@ Hand the subagent precise context — selected code, a prior delegate's result, 
 }
 ```
 
-The stored/displayed task stays as the original `task`. When small, `context` inlines as a `<context>` block; when large (over 8,000 chars) it spills to a temp file injected via `@file`, so a large context never drags a short task into a spill.
+The stored/displayed task stays as the original `task`. `context` is delivered as a `<context>` block ahead of the task in the child's initial prompt — the prompt travels over stdin, so size is not argv-bound and no spill file is involved.
 
 #### `files` (reference paths)
 
@@ -257,7 +278,7 @@ The stored/displayed task stays as the original `task`. When small, `context` in
 }
 ```
 
-Each path is injected as an independent `@file` attachment the subagent reads directly. **File contents stay out of your context window** — you pass only the paths. Prefer this over pasting file contents into `context`, since the child receives the content on its first turn without spending a tool call to read it.
+Each path is injected as an independent `<file name="...">` block in the child's initial prompt — the same wrap pi applies to `@file` arguments. **File contents stay out of your context window** — you pass only the paths; this process reads the bytes off disk and pipes them straight to the child. Prefer this over pasting file contents into `context`, since the child receives the content on its first turn without spending a tool call to read it.
 
 ### Budget enforcement
 

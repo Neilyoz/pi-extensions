@@ -40,8 +40,9 @@ import {
   freezeFrame,
   createThrottler,
   terminalResultLine,
+  buildDisplayItems,
 } from "./utils.ts";
-import type { SubagentResult, SubagentRole } from "./types.ts";
+import type { ActivityEntry, SubagentResult, SubagentRole } from "./types.ts";
 
 /** Shared SubagentResult fixture. */
 const baseResult = (overrides: Partial<SubagentResult> = {}): SubagentResult => ({
@@ -691,5 +692,40 @@ describe("background run helpers", () => {
     assert.equal(frozen.pauseStart, undefined);
     assert.ok(frozen.elapsedMs! >= 4990 && frozen.elapsedMs! <= 5010, `elapsedMs ~5000, got ${frozen.elapsedMs}`);
     assert.ok(frozen.graceMs! >= 3000 && frozen.graceMs! <= 3010, `graceMs ~3000, got ${frozen.graceMs}`);
+  });
+});
+
+describe("streamed-text activity entries", () => {
+  const textEntry = (status: ActivityEntry["status"], text?: string): ActivityEntry => ({
+    kind: "text",
+    id: "text-0",
+    status,
+    ...(text !== undefined ? { text } : {}),
+  });
+
+  test("buildDisplayItems excludes text entries (view-only content)", () => {
+    const log: ActivityEntry[] = [
+      { kind: "thinking", id: "thinking-0", status: "done" },
+      { kind: "toolCall", id: "call-1", status: "done", toolName: "bash", args: { command: "ls" } },
+      textEntry("done", "partial answer"),
+    ];
+    const items = buildDisplayItems(log);
+    assert.equal(items.length, 2);
+    assert.deepEqual(items.map((i) => i.type), ["thinking", "toolCall"]);
+  });
+
+  test("buildDisplayItems returns empty for a text-only log", () => {
+    assert.deepEqual(buildDisplayItems([textEntry("running", "streaming...")]), []);
+  });
+
+  test("describeCurrentActivity reports responding for a running text entry", () => {
+    assert.equal(
+      describeCurrentActivity({ activityLog: [textEntry("running", "hello")] }),
+      "responding",
+    );
+    assert.equal(
+      describeCurrentActivity({ activityLog: [textEntry("done", "hello")] }),
+      "responded",
+    );
   });
 });
