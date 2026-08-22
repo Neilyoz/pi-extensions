@@ -166,24 +166,30 @@ function formatTokens(n: number): string {
 interface GitDirty {
   staged: number;
   unstaged: number;
+  untracked: number;
 }
 let _gitDirty: GitDirty | undefined;
 
-/** Parse `git status --porcelain` output into staged / unstaged counts. */
+/** Parse `git status --porcelain` output into staged, unstaged, and untracked counts. */
 function parseGitPorcelain(stdout: string): GitDirty {
   const lines = stdout.trim();
-  if (!lines) return { staged: 0, unstaged: 0 };
+  if (!lines) return { staged: 0, unstaged: 0, untracked: 0 };
 
   let staged = 0;
   let unstaged = 0;
+  let untracked = 0;
   for (const line of lines.split("\n")) {
     if (line.length < 2) continue;
     const x = line[0];
     const y = line[1];
-    if (x !== " " && x !== "?" && x !== "!") staged++;
-    if (y !== " ") unstaged++;
+    if (x === "?" && y === "?") {
+      untracked++;
+      continue;
+    }
+    if (x !== " " && x !== "!") staged++;
+    if (y !== " " && y !== "!") unstaged++;
   }
-  return { staged, unstaged };
+  return { staged, unstaged, untracked };
 }
 
 /** Run `git status --porcelain` asynchronously so a slow / hanging git never
@@ -218,13 +224,14 @@ function refreshGitDirty(cwd: string, onDone?: () => void): void {
   child.on("close", (code) => settle(code === 0, stdout));
 }
 
-/** Format dirty state as pi-style "+2 ~1" string (leading space), or "" if
- *  clean / unknown — ready to splice into a "(branch…)" segment. */
+/** Format dirty state as "+staged ~unstaged *untracked" (leading space), or ""
+ *  if clean / unknown — ready to splice into a "(branch…)" segment. */
 function gitDirtyDisplay(): string {
   if (!_gitDirty) return "";
   const parts: string[] = [];
   if (_gitDirty.staged > 0) parts.push(`+${_gitDirty.staged}`);
   if (_gitDirty.unstaged > 0) parts.push(`~${_gitDirty.unstaged}`);
+  if (_gitDirty.untracked > 0) parts.push(`*${_gitDirty.untracked}`);
   return parts.length ? ` ${parts.join(" ")}` : "";
 }
 
