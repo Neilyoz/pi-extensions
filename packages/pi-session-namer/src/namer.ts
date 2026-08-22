@@ -42,6 +42,7 @@ export function buildNamerSystemPrompt(maxLength: number): string {
     `- Output in the SAME language as the user's message`,
     `- Maximum ${maxLength} characters`,
     `- Output ONLY the title, no quotes, no prefix, no explanation`,
+    `- Do NOT wrap the output in any XML or markdown tags`,
     `- The input wraps the user's message in <user_message> and the assistant's reply in <assistant_reply>; name the session after the user's intent`,
     `- Summarize the user's intent; do not copy any message verbatim`,
     `- Reflect what the session is about, not the latest progress`,
@@ -111,6 +112,16 @@ export async function generateSessionName(
 function cleanSessionName(raw: string, maxLength: number): string {
   let name = raw.trim();
   if (!name) return "New session";
+
+  // Strip XML wrapper tags echoed by weak models (they see XML-wrapped input
+  // and mimic the format, e.g. "<assistant_reply>Fix login</assistant_reply>").
+  // Repeat to also unwrap one level of nesting.
+  const wrapper = /^<([a-zA-Z][\w-]*)>\s*([\s\S]*?)\s*<\/\1>\s*$/;
+  let prev: string;
+  do {
+    prev = name;
+    name = name.replace(wrapper, "$2").trim();
+  } while (name !== prev);
 
   // Strip common model prefixes that slip through
   name = name.replace(/^(here is (a |the )?(title|name)[：:]\s*)/i, "");

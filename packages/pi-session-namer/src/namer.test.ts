@@ -33,6 +33,34 @@ test("session namer honors small positive hard limits without ellipsis overflow"
   assert.equal(await generatedName(4), "A...");
 });
 
+test("session namer strips echoed XML wrapper tags", async () => {
+  const rolesApi = {
+    async completeWithRole() {
+      return { content: [{ type: "text", text: "<assistant_reply>Fix login bug</assistant_reply>" }] };
+    },
+  };
+  const config: SessionNamerConfig = { enabled: true, sideAgentRole: "utility", maxLength: 0 };
+  assert.equal(
+    await generateSessionName(rolesApi as any, "utility", config, { user: "Name this session" }),
+    "Fix login bug",
+  );
+});
+
+test("session namer strips nested XML wrapper tags", async () => {
+  const rolesApi = {
+    async completeWithRole() {
+      return {
+        content: [{ type: "text", text: "<assistant_reply><title>Fix login bug</title></assistant_reply>" }],
+      };
+    },
+  };
+  const config: SessionNamerConfig = { enabled: true, sideAgentRole: "utility", maxLength: 0 };
+  assert.equal(
+    await generateSessionName(rolesApi as any, "utility", config, { user: "Name this session" }),
+    "Fix login bug",
+  );
+});
+
 test("session namer keeps wrapper tags closed when truncating long replies", async () => {
   let captured = "";
   const rolesApi = {
