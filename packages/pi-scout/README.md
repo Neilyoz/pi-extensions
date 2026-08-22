@@ -115,6 +115,10 @@ Main model runs — with only the selected skills, on the chosen model
 
 A trivial acknowledgment is a short prompt that is *entirely* an ack — matched against a built-in 中/英/日/韓 phrase table. Long prompts are never treated as acks even if they begin with an ack word, so `好的，那我们重构整个模块` always reaches the side model.
 
+## Limitations
+
+Scout only runs when you send a prompt to an idle agent. Messages typed while the agent is already working — mid-run steering and queued follow-ups — are not scouted: they run with the skills and model already chosen for that run. If you steer into something unrelated to the current task, the new skills won't be picked until your next prompt from idle.
+
 ## Why model-router is off by default
 
 Unlike the other two modules, model-router makes a **persistent** change: it switches pi's active model — the same kind of state change as selecting one manually — and subsequent turns stay on the routed model until something else changes it.
