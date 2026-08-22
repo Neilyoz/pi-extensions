@@ -250,21 +250,18 @@ describe("previewArgs", () => {
   test("command -> $ prefix", () => {
     assert.equal(previewArgs({ command: "ls -la" }), "$ ls -la");
   });
-  test("command truncated at 60 chars", () => {
+  test("command is preserved for viewport-aware truncation", () => {
     const long = "x".repeat(70);
-    const r = previewArgs({ command: long });
-    assert.ok(r.startsWith("$ "));
-    assert.ok(r.endsWith("..."));
-    assert.ok(r.length < long.length);
+    assert.equal(previewArgs({ command: long }), `$ ${long}`);
   });
   test("file_path is shortened (home -> ~)", () => {
     const r = previewArgs({ file_path: "/home/user/foo.ts" });
     assert.ok(r.includes("foo.ts"));
   });
-  test("url passthrough (truncated when long)", () => {
+  test("url is preserved for viewport-aware truncation", () => {
     assert.equal(previewArgs({ url: "https://example.com" }), "https://example.com");
     const longUrl = "https://" + "x".repeat(70);
-    assert.ok(previewArgs({ url: longUrl }).endsWith("..."));
+    assert.equal(previewArgs({ url: longUrl }), longUrl);
   });
   test("query/pattern/regex/search -> /.../  form", () => {
     assert.equal(previewArgs({ query: "foo" }), "/foo/");

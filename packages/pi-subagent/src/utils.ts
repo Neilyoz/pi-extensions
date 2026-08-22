@@ -149,8 +149,7 @@ export function formatToolCall(
     }
     case "bash": {
       const command = (args.command as string) || "...";
-      const preview = command.length > 60 ? `${command.slice(0, 60)}...` : command;
-      return fg("muted", "$ ") + fg("toolOutput", preview);
+      return fg("muted", "$ ") + fg("toolOutput", command);
     }
     case "read": {
       const rawPath = (args.file_path || args.path || "...") as string;
@@ -271,10 +270,8 @@ export function taskPreview(task: string): string {
  * Width-aware collapsed-view component: renders each line truncated with "…"
  * to the actual viewport width (never wraps), padded full-width like Text(0,0).
  *
- * The char caps in taskPreview/formatToolCall/etc. stay as they are — they are
- * content limits shared with the LLM-facing text (check output, error
- * messages), which has no viewport semantics. This component is the TUI-side
- * final guard, applied where the folding affordance exists.
+ * Content formatters leave tool-call arguments intact; this component is the
+ * TUI-side final guard, applied where the folding affordance exists.
  */
 export function collapsedText(text: string): Component {
   const lines = text.split("\n");
@@ -586,15 +583,14 @@ export function freezeFrame(r: SubagentResult): SubagentResult {
  */
 export function previewArgs(args: Record<string, unknown>): string {
   const command = args.command as string | undefined;
-  if (command) return `$ ${command.length > 60 ? command.slice(0, 60) + "..." : command}`;
+  if (command) return `$ ${command}`;
   const fp = (args.file_path || args.path) as string | undefined;
   if (fp) return shortenPath(fp);
   const url = args.url as string | undefined;
-  if (url) return url.length > 60 ? url.slice(0, 60) + "..." : url;
+  if (url) return url;
   const query = (args.query || args.pattern || args.regex || args.search) as string | undefined;
-  if (query) return `/${query.length > 60 ? query.slice(0, 60) + "..." : query}/`;
-  const argsStr = JSON.stringify(args);
-  return argsStr.length > 50 ? argsStr.slice(0, 50) + "..." : argsStr;
+  if (query) return `/${query}/`;
+  return JSON.stringify(args);
 }
 
 // ── Numeric configuration ─────────────────────────────────────
