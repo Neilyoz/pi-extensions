@@ -41,6 +41,7 @@ import {
   createThrottler,
   terminalResultLine,
   buildDisplayItems,
+  formatToolCall,
 } from "./utils.ts";
 import type { ActivityEntry, SubagentResult, SubagentRole } from "./types.ts";
 
@@ -426,6 +427,28 @@ describe("terminalResultLine", () => {
   });
   test("finishedText replaces the success chain (wait's status-only line)", () => {
     assert.equal(terminalResultLine(baseResult(), id, "finished"), "\u2713 finished");
+  });
+  test("error message newlines are flattened to one line", () => {
+    assert.equal(
+      terminalResultLine(baseResult({ exitCode: 1, errorMessage: "boom\n  at frame 2\nat frame 3" }), id),
+      "\u2717 boom at frame 2 at frame 3",
+    );
+  });
+});
+
+// ── formatToolCall: single-line guarantee for TUI rows ──
+describe("formatToolCall newline sanitization", () => {
+  const id = (_color: string, text: string) => text;
+
+  test("multi-line bash command renders as one line", () => {
+    const out = formatToolCall("bash", { command: "echo a\necho b\n  echo c" }, id);
+    assert.ok(!out.includes("\n"));
+    assert.equal(out, "$ echo a echo b echo c");
+  });
+  test("default branch preview flattens embedded newlines", () => {
+    const out = formatToolCall("fetch", { url: "https://x.test/a\n/b" }, id);
+    assert.ok(!out.includes("\n"));
+    assert.ok(out.includes("https://x.test/a /b"));
   });
 });
 

@@ -136,7 +136,27 @@ export function shortenPath(p: string): string {
   return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
+/** Flatten embedded newlines (multi-line bash commands, patterns, error
+ *  messages) into single spaces so a row never spans multiple terminal lines.
+ *  Every caller renders the result as ONE TUI row — inline rows join it with
+ *  "\n" separators and the :view overlay wraps each row in a border frame. */
+function oneLine(s: string): string {
+  return s.replace(/\s*\r?\n\s*/g, " ");
+}
+
+/**
+ * One-line tool-call row for TUI display. Newline sanitization happens here
+ * at the single choke point so every tool branch is covered.
+ */
 export function formatToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+  fg: (color: string, text: string) => string,
+): string {
+  return oneLine(renderToolCall(toolName, args, fg));
+}
+
+function renderToolCall(
   toolName: string,
   args: Record<string, unknown>,
   fg: (color: string, text: string) => string,
@@ -306,7 +326,7 @@ function failureResultText(r: {
   const isCancelled = r.stopReason === "cancelled";
   return {
     content:
-      r.errorMessage ||
+      oneLine(r.errorMessage || "") ||
       (isTimeout ? "Timed out" : isBudget ? "Budget exceeded" : isCancelled ? "Cancelled" : "failed"),
     // Timeout/budget/cancel are intentional stops with partial output —
     // warning, not the error red reserved for real failures.
