@@ -18,7 +18,7 @@ Opens a centered overlay that serializes the current conversation and streams an
 ├──────────────────────────────────────────────────┤
 │ model deepseek/deepseek-v4-flash   tokens 1.2k   │
 ├──────────────────────────────────────────────────┤
-│ Esc close · ↑↓ scroll · Enter send               │
+│ Esc · ↑↓ scroll · PageUp/Dn jump · Enter         │
 ╰──────────────────────────────────────────────────╯
 ```
 
@@ -26,6 +26,7 @@ Opens a centered overlay that serializes the current conversation and streams an
 
 - **Streaming Markdown** — the answer appears token-by-token with pi's native Markdown rendering and syntax highlighting
 - **Auto-height** — the message region grows with content up to ~80% of the terminal, then scrolls (↑/↓, auto-follows the tail while streaming)
+- **Message navigation** — prominent turn dividers and PageUp/PageDown jumps across the full local history (Fn+↑/Fn+↓ on MacBook)
 - **Multi-turn** — follow-up questions reuse the serialized context (cheaper, no re-serialization)
 - **Live status** — header shows what the main agent is doing right now; status line shows the utility model + cumulative tokens
 - **Read-after-burn** — closing the overlay discards everything; the main session is never touched
@@ -60,7 +61,7 @@ Or add to `~/.pi/agent/settings.json`:
 /peek
 ```
 
-Type a question, press Enter. The answer streams in. Ask follow-ups, or press Esc to close.
+Type a question, press Enter. The answer streams in. Ask follow-ups, use PageUp/PageDown to jump between your questions (Fn+↑/Fn+↓ on MacBook), or press Esc to close.
 
 ## License
 

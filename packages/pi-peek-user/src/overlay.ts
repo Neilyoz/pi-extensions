@@ -103,6 +103,8 @@ export class PeekOverlay {
 
   // scroll
   private bodyLines: string[] = [];
+  private userMessageAnchors: number[] = [];
+  private activeUserAnchorIndex: number | null = null;
   private scrollOffset = 0;
   private autoFollow = true;
   // composer: how many rows the composer occupies (≥1); set during render
@@ -155,9 +157,18 @@ export class PeekOverlay {
       this.close();
       return;
     }
-    // Scroll works in both modes — review history while waiting.
+    // Scroll and message jumps work in both modes — review history while waiting.
+    if (matchesKey(data, "pageUp")) {
+      this.jumpToUserMessage("previous");
+      return;
+    }
+    if (matchesKey(data, "pageDown")) {
+      this.jumpToUserMessage("next");
+      return;
+    }
     if (matchesKey(data, "up")) {
       this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+      this.activeUserAnchorIndex = null;
       this.autoFollow = false;
       this.tui.requestRender();
       return;
@@ -165,6 +176,7 @@ export class PeekOverlay {
     if (matchesKey(data, "down")) {
       const max = Math.max(0, this.bodyLines.length - this.currentBodyHeight);
       this.scrollOffset = Math.min(max, this.scrollOffset + 1);
+      this.activeUserAnchorIndex = null;
       if (this.scrollOffset >= max) this.autoFollow = true;
       this.tui.requestRender();
       return;
@@ -172,9 +184,59 @@ export class PeekOverlay {
     if (this.mode === "asking") return;
     // The Editor owns all text editing: typed characters, backspace, cursor
     // movement (Left/Right/Home/End, Ctrl+A/E, word moves), undo, and Enter
-    // (which fires onSubmit → submit). Up/Down stay ours for scrolling the
-    // answer region, so they are NOT forwarded.
+    // (which fires onSubmit → submit). Up/Down and PageUp/PageDown stay ours
+    // for answer navigation, so they are NOT forwarded.
     this.editor.handleInput(data);
+    this.tui.requestRender();
+  }
+
+  private jumpToUserMessage(direction: "previous" | "next"): void {
+    if (this.userMessageAnchors.length === 0) return;
+
+    const maxOffset = Math.max(0, this.bodyLines.length - this.currentBodyHeight);
+    let targetIndex: number | undefined;
+
+    if (direction === "previous") {
+      if (this.activeUserAnchorIndex !== null) {
+        targetIndex = this.activeUserAnchorIndex - 1;
+      } else if (this.scrollOffset >= maxOffset) {
+        targetIndex = this.userMessageAnchors.length - 1;
+      } else {
+        for (let i = this.userMessageAnchors.length - 1; i >= 0; i--) {
+          const anchor = this.userMessageAnchors[i];
+          if (anchor !== undefined && anchor < this.scrollOffset) {
+            targetIndex = i;
+            break;
+          }
+        }
+      }
+    } else if (this.activeUserAnchorIndex !== null) {
+      targetIndex = this.activeUserAnchorIndex + 1;
+      if (targetIndex >= this.userMessageAnchors.length) {
+        this.activeUserAnchorIndex = null;
+        this.scrollOffset = maxOffset;
+        this.autoFollow = true;
+        this.tui.requestRender();
+        return;
+      }
+    } else {
+      if (this.scrollOffset >= maxOffset) return;
+      targetIndex = this.userMessageAnchors.findIndex((anchor) => anchor > this.scrollOffset);
+      if (targetIndex < 0) {
+        this.scrollOffset = maxOffset;
+        this.autoFollow = true;
+        this.tui.requestRender();
+        return;
+      }
+    }
+
+    if (targetIndex === undefined || targetIndex < 0) return;
+    const target = this.userMessageAnchors[targetIndex];
+    if (target === undefined) return;
+
+    this.activeUserAnchorIndex = targetIndex;
+    this.scrollOffset = Math.min(target, maxOffset);
+    this.autoFollow = false;
     this.tui.requestRender();
   }
 
@@ -189,6 +251,7 @@ export class PeekOverlay {
     this.streamMarkdown.setText("");
     const priorHistory = this.history.slice();
     this.history.push({ role: "user", text: q });
+    this.activeUserAnchorIndex = null;
     this.autoFollow = true;
     this.tui.requestRender();
 
@@ -229,6 +292,7 @@ export class PeekOverlay {
         if (result.model) this.lastUtilityModel = result.model;
         this.mode = "input";
         this.streamText = "";
+        this.activeUserAnchorIndex = null;
         this.autoFollow = true;
         this.tui.requestRender();
       })
@@ -244,6 +308,7 @@ export class PeekOverlay {
         });
         this.mode = "input";
         this.streamText = "";
+        this.activeUserAnchorIndex = null;
         this.autoFollow = true;
         this.tui.requestRender();
       });
@@ -307,6 +372,7 @@ export class PeekOverlay {
     // ── rebuild body lines (history + live stream) ───────────────────
     // Wrap to innerW - 2 so a leading " " indent + the line fits in innerW.
     this.bodyLines = [];
+    this.userMessageAnchors = [];
     const wrapW = Math.max(10, innerW - 2);
 
     if (this.history.length === 0 && this.mode !== "asking") {
@@ -319,10 +385,17 @@ export class PeekOverlay {
         this.bodyLines.push(ln);
       }
     } else {
-      const recent = this.history.slice(-4);
-      for (const h of recent) {
-        const who = h.role === "user" ? th.fg("accent", "you") : th.fg("success", "peek");
-        this.bodyLines.push(who);
+      for (const h of this.history) {
+        if (h.role === "user") {
+          this.userMessageAnchors.push(this.bodyLines.length);
+          const label = " you ";
+          const rule = "─".repeat(Math.max(0, wrapW - visibleWidth(label)));
+          this.bodyLines.push(th.fg("accent", `${label}${rule}`));
+        } else {
+          const label = " peek ";
+          const rule = "─".repeat(Math.max(0, wrapW - visibleWidth(label)));
+          this.bodyLines.push(th.fg("success", `${label}${rule}`));
+        }
         if (h.role === "assistant") {
           h.markdown ??= new Markdown(h.text, 0, 0, this.markdownTheme);
           this.bodyLines.push(...h.markdown.render(wrapW));
@@ -336,13 +409,19 @@ export class PeekOverlay {
 
     if (this.mode === "asking") {
       const elapsed = ((Date.now() - this.askStart) / 1000).toFixed(1);
-      const label =
+      const stateText =
+        this.stage === "done" ? "done" : this.stage === "error" ? "error" : "investigating";
+      const stateLabel =
         this.stage === "done"
-          ? th.fg("success", "done")
+          ? th.fg("success", stateText)
           : this.stage === "error"
-            ? th.fg("error", "error")
-            : th.fg("accent", "investigating");
-      this.bodyLines.push(`${label}  ${th.fg("dim", `${elapsed}s`)}`);
+            ? th.fg("error", stateText)
+            : th.fg("accent", stateText);
+      const prefixText = ` peek · ${stateText} ${elapsed}s `;
+      const rule = "─".repeat(Math.max(0, wrapW - visibleWidth(prefixText)));
+      this.bodyLines.push(
+        `${th.fg("success", " peek ")}${th.fg("dim", "· ")}${stateLabel} ${th.fg("dim", `${elapsed}s `)}${th.fg("success", rule)}`,
+      );
       // Stream placeholder so the region doesn't look frozen before the
       // first token lands. Once text arrives, render it with pi's Markdown
       // component so partial and completed answers use identical formatting.
@@ -433,7 +512,8 @@ export class PeekOverlay {
       maxOffset > 0
         ? ` ${th.fg("dim", "·")} ${th.fg("dim", `↑${this.scrollOffset} ↓${maxOffset - this.scrollOffset} scroll`)}`
         : "";
-    const hotkeys = ` ${th.fg("dim", "Esc close")}${scrollHint} ${th.fg("dim", "·")} ${th.fg("dim", "Enter send")}`;
+    const jumpKeys = "PageUp/Dn jump";
+    const hotkeys = ` ${th.fg("dim", "Esc close")}${scrollHint} ${th.fg("dim", "·")} ${th.fg("dim", jumpKeys)} ${th.fg("dim", "·")} ${th.fg("dim", "Enter send")}`;
     out.push(row(hotkeys));
 
     // ── bottom border: close the box ─────────────────────────────────
