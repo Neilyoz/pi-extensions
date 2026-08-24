@@ -3,8 +3,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CardEditor, type FrameProvider, type SpinnerPhase } from "./card-editor";
-import { DEFAULT_CONFIG, loadEditorShellConfig, type EditorShellConfig, type EditorShellIcons } from "./config";
+import { CardEditor, type FrameProvider, type SpinnerPhase } from "./card-editor.ts";
+import { DEFAULT_CONFIG, loadEditorShellConfig, type EditorShellConfig, type EditorShellIcons } from "./config.ts";
 
 /**
  * pi-editor-shell — Replaces pi's default editor and status bar with a
