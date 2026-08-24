@@ -367,11 +367,12 @@ export async function spawnSubagent(
       // RPC command acknowledgements ("response" lines) carry no agent state.
       if (event.type === "response") return;
 
-      // RPC mode is a resident server: after the task completes (agent_end) the
-      // process would idle forever waiting for more stdin commands. We run one
-      // prompt per child, so ending our stdin side triggers its graceful
-      // shutdown (onInputEnd → runtime dispose → exit).
-      if (event.type === "agent_end") {
+      // RPC mode is a resident server. agent_end only marks one low-level run
+      // and may be followed by an automatic retry, compaction, or queued
+      // continuation. agent_settled is the authoritative terminal event. We run
+      // one prompt per child, so ending stdin there triggers graceful shutdown
+      // (onInputEnd → runtime dispose → exit).
+      if (event.type === "agent_settled") {
         try {
           proc?.stdin?.end();
         } catch {
@@ -398,8 +399,11 @@ export async function spawnSubagent(
             );
           }
           if (!result.model && msg.model) result.model = msg.model;
-          if (msg.stopReason) result.stopReason = msg.stopReason;
-          if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+          // message_end is authoritative for the latest assistant attempt. A
+          // successful native retry must clear the transient error left by the
+          // failed attempt instead of triggering a redundant whole-run fallback.
+          result.stopReason = msg.stopReason;
+          result.errorMessage = msg.errorMessage;
 
           // Track last assistant text
           for (const part of msg.content) {
