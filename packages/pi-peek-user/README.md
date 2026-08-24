@@ -24,7 +24,7 @@ Opens a centered overlay that serializes the current conversation and streams an
 
 ## Features
 
-- **Streaming** — the answer appears token-by-token as it arrives
+- **Streaming Markdown** — the answer appears token-by-token with pi's native Markdown rendering and syntax highlighting
 - **Auto-height** — the message region grows with content up to ~80% of the terminal, then scrolls (↑/↓, auto-follows the tail while streaming)
 - **Multi-turn** — follow-up questions reuse the serialized context (cheaper, no re-serialization)
 - **Live status** — header shows what the main agent is doing right now; status line shows the utility model + cumulative tokens

@@ -29,13 +29,18 @@
 import {
   type EditorTheme,
   Editor,
+  Markdown,
   matchesKey,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { getPeekAPI, type InvestigateResult, type MainAgentStatus } from "@d3ara1n/pi-peek";
-import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
+import {
+  getMarkdownTheme,
+  type ExtensionContext,
+  type ThemeColor,
+} from "@earendil-works/pi-coding-agent";
 import { buildPeekHistoryMessages, type PeekReferenceHistoryEntry } from "./reference.ts";
 
 /** Minimal slice of TUI we use: render trigger + terminal size. */
@@ -55,6 +60,7 @@ interface PeekTheme {
 interface HistoryItem extends PeekReferenceHistoryEntry {
   usage?: InvestigateResult["usage"];
   model?: string;
+  markdown?: Markdown;
 }
 
 type Mode = "input" | "asking";
@@ -83,6 +89,8 @@ export class PeekOverlay {
   private stage = "";
   private askStart = 0;
   private streamText = "";
+  private markdownTheme = getMarkdownTheme();
+  private streamMarkdown = new Markdown("", 0, 0, this.markdownTheme);
 
   // cached reference for this overlay's follow-up questions
   private referenceText: string | null = null;
@@ -178,6 +186,7 @@ export class PeekOverlay {
     this.stage = "investigating";
     this.askStart = Date.now();
     this.streamText = "";
+    this.streamMarkdown.setText("");
     const priorHistory = this.history.slice();
     this.history.push({ role: "user", text: q });
     this.autoFollow = true;
@@ -203,6 +212,7 @@ export class PeekOverlay {
         onToken: (d) => {
           if (this.closed || generation !== this.requestGeneration) return;
           this.streamText += d;
+          this.streamMarkdown.setText(this.streamText);
           this.tui.requestRender();
         },
       })
@@ -214,6 +224,7 @@ export class PeekOverlay {
           text: result.answer,
           usage: result.usage,
           model: result.model,
+          markdown: new Markdown(result.answer, 0, 0, this.markdownTheme),
         });
         if (result.model) this.lastUtilityModel = result.model;
         this.mode = "input";
@@ -225,7 +236,12 @@ export class PeekOverlay {
         if (this.requestAbort === requestAbort) this.requestAbort = null;
         if (this.closed || generation !== this.requestGeneration) return;
         const msg = err instanceof Error ? err.message : String(err);
-        this.history.push({ role: "assistant", text: `Error: ${msg}` });
+        const text = `Error: ${msg}`;
+        this.history.push({
+          role: "assistant",
+          text,
+          markdown: new Markdown(text, 0, 0, this.markdownTheme),
+        });
         this.mode = "input";
         this.streamText = "";
         this.autoFollow = true;
@@ -254,7 +270,8 @@ export class PeekOverlay {
   }
 
   invalidate(): void {
-    // no cached render state
+    this.streamMarkdown.invalidate();
+    for (const item of this.history) item.markdown?.invalidate();
   }
 
   /**
@@ -306,8 +323,13 @@ export class PeekOverlay {
       for (const h of recent) {
         const who = h.role === "user" ? th.fg("accent", "you") : th.fg("success", "peek");
         this.bodyLines.push(who);
-        for (const ln of wrapTextWithAnsi(h.text, wrapW)) {
-          this.bodyLines.push(ln);
+        if (h.role === "assistant") {
+          h.markdown ??= new Markdown(h.text, 0, 0, this.markdownTheme);
+          this.bodyLines.push(...h.markdown.render(wrapW));
+        } else {
+          for (const ln of wrapTextWithAnsi(h.text, wrapW)) {
+            this.bodyLines.push(ln);
+          }
         }
       }
     }
@@ -322,10 +344,12 @@ export class PeekOverlay {
             : th.fg("accent", "investigating");
       this.bodyLines.push(`${label}  ${th.fg("dim", `${elapsed}s`)}`);
       // Stream placeholder so the region doesn't look frozen before the
-      // first token lands.
-      const showing = this.streamText || th.fg("dim", "…");
-      for (const ln of wrapTextWithAnsi(showing, wrapW)) {
-        this.bodyLines.push(ln);
+      // first token lands. Once text arrives, render it with pi's Markdown
+      // component so partial and completed answers use identical formatting.
+      if (this.streamText) {
+        this.bodyLines.push(...this.streamMarkdown.render(wrapW));
+      } else {
+        this.bodyLines.push(th.fg("dim", "…"));
       }
     }
 
