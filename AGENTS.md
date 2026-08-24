@@ -289,6 +289,12 @@ pi-access-denied 拦截的是整个 `tool_call`。一条 bash 命令里若 token
 
 **原理：** monorepo 共享根 tsconfig，类型检查是 monorepo 级别、一次覆盖所有包。
 
+### 测试分层原则
+
+- 默认测试必须离线、确定、可重复；外部进程、网络、模型 API、用户目录、自动安装和持久状态一律通过依赖注入与 fake 隔离。
+- 真实边界验证写为显式 integration test，默认脚本不包含；integration test 只能使用临时沙箱，负责清理，缺少依赖时应干净跳过。
+- 测试改动过的全局变量、环境变量、计时器和 mock 必须在结束时恢复，不能污染其他测试或用户环境。
+
 ### 不要给 JSON 配置文件剥注释
 
 场景：读 pi 的 `settings.json`、npm 的 `package.json` 等**标准 JSON** 文件时，agent 常写正则剥离注释（`content.replace(/\/\/.*$/gm, "")`）想"兼容 JSONC"。这是**无用且破坏性**的。
