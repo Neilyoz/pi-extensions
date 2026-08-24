@@ -20,7 +20,7 @@ import {
   type BalanceInfo,
   type UsageProvider,
 } from "@d3ara1n/pi-usage-block-core";
-import { BUILTIN_PROVIDERS } from "./builtin";
+import { BUILTIN_PROVIDERS } from "./builtin.ts";
 
 const STATUS_KEY = "usage-block";
 
