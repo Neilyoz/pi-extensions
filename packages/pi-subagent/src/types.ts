@@ -55,10 +55,17 @@ export interface SubagentRole {
   /** System prompt for the subagent */
   systemPrompt: string;
   /**
-   * Tools available to this subagent. Empty or absent = all tools (no restriction).
-   * When set, only the listed tool names are exposed to the child (exact-name allowlist).
+   * Tools available to this subagent — exact-name allowlist mapped to pi's `--tools`.
+   * Absent = all tools (no restriction); empty array = literally zero tools (`--no-tools`).
+   * Mutually exclusive with `excludeTools`.
    */
   tools?: string[];
+  /**
+   * Tools withheld from this subagent — everything else stays available (mapped
+   * to pi's `--exclude-tools`). Absent or empty = no restriction.
+   * Mutually exclusive with `tools`.
+   */
+  excludeTools?: string[];
   /** If this role has `delegate`, restrict which roles it may spawn. undefined = no restriction. */
   subagentRoles?: string[];
   /** Per-role active-time timeout in seconds. `0` or unset means unlimited; negative values are normalized to `0`. */

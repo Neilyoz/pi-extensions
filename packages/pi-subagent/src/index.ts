@@ -203,6 +203,22 @@ export default function subagentExtension(pi: ExtensionAPI) {
     refreshAvailableRoles();
     applyAgentOverrides(availableRoles, config.agentOverrides);
 
+    // Tool policy is one-dimensional: `tools` is a closed allowlist,
+    // `excludeTools` an open denylist — carrying both is a contradiction
+    // (intent bug, e.g. "append to the allowlist" written as both fields),
+    // never a combination to resolve. Skip the role loudly; the surviving
+    // role set self-documents via guidelines, and delegate fast-fails on the
+    // missing name.
+    for (const [name, role] of Object.entries(availableRoles)) {
+      if (role.tools !== undefined && role.excludeTools !== undefined) {
+        delete availableRoles[name];
+        ctx.ui.notify(
+          `[pi-subagent] Role "${name}" skipped — "tools" and "excludeTools" are mutually exclusive; configure exactly one.`,
+          "error",
+        );
+      }
+    }
+
     // Validate custom roles (skip built-in roles — they already have all fields)
     // `tools` is optional — absent means the role gets all tools.
     const REQUIRED_FIELDS = [

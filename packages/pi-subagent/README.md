@@ -2,7 +2,7 @@
 
 Role-based subagent orchestration for [pi](https://github.com/earendil-works/pi).
 
-Provides a `subagent_delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries. Runs can be foreground (blocking) or background (asynchronous, collected later via `subagent_wait`/`subagent_check`, cancellable via `subagent_cancel`). A centered live view (`/subagent:view`) shows every run's activity feed as it happens, and mid-run corrections can be queued into a running subagent from the view's input box or via `subagent_steer`.
+Provides a `subagent_delegate` tool that lets the main model offload tasks to specialized pi child processes with configurable model roles, real-time TUI progress, and AI-generated summaries. Runs can be foreground (blocking) or background (asynchronous, collected later via `subagent_wait`/`subagent_check`, cancellable via `subagent_cancel`). A centered live view (`/subagent:view`) shows every run's activity feed as it happens, with a per-run brief page for inputs and stats; mid-run corrections can be queued into a running subagent from the view's steer editor or via `subagent_steer`.
 
 ## Design Philosophy
 
@@ -23,7 +23,7 @@ This means:
 
 1. Main model calls the `subagent_delegate` tool with a role and task description
 2. The extension resolves the role to a model via pi-model-roles
-3. Spawns an isolated pi child process in RPC mode (`--mode rpc`) with the configured model, tools, and system prompt — agent events stream back over stdout while stdin carries the initial prompt and mid-run steering commands
+3. Spawns an isolated pi child process in RPC mode (`--mode rpc`) with the configured model, tools, and system prompt — agent events stream back over stdout while stdin carries the initial prompt and mid-run steering commands. Children are headless: interactive extension dialogs (`ctx.ui.select/confirm/input`) are answered automatically with `cancelled` (standard "user declined" semantics), so an extension that asks never hangs the run
 4. **Real-time TUI progress** shows tool calls, turns, and elapsed time as the subagent runs
 5. After completion, an **AI-generated one-line summary** is produced for compact display
 6. Returns the result to the main model with usage statistics (turns, tokens, cost)
@@ -54,18 +54,20 @@ This means:
 
 | Command | Description |
 |---------|-------------|
-| `/subagent:view` | Open the live view: a tabbed overlay showing one run's full activity feed at a time, with an input box to steer the focused run |
+| `/subagent:view` | Open the live view: a tabbed overlay with a per-run activity feed and a brief detail page (inputs, files, stats), plus modal steer input for the focused run |
 | `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, and role references |
 | `/subagent:status` | List background runs (active + collected) and their current state |
 | `/subagent:cancel <id\|all> [reason]` | Cancel a live background run (or every live run); the optional reason is recorded with the run |
 
 ### Live view (`/subagent:view`)
 
-A centered overlay covering most of the screen. A tab row across the top lists every run (icon · id · role); `Tab` cycles the focused run, and the rest of the viewport belongs to it alone — its complete activity feed, tail-capped to the visible area with a `⋮ earlier activity` marker when older entries roll off.
+A centered overlay covering most of the screen. A tab row across the top lists every run (icon · id · role); `Tab` cycles the focused run, and the rest of the viewport belongs to it alone — showing one of two pages, toggled with `d`.
 
-The feed itself is a continuous, append-only list: each entry is static text with a state icon, and the only animated thing is the ellipsis on a running entry (`.` → `..` → `...`). Finishing freezes an entry in place — its position never changes, only the icon flips. Streamed assistant text grows in place as the run's last line and settles into plain terminal-colored text at the turn boundary. Both foreground and background runs appear here; a foreground run stays listed while its delegate call blocks the main agent.
+The **activity page** (default) is the run's live feed: a continuous, append-only list where each entry is static text with a state icon, and the only animated thing is the ellipsis on a running entry (`.` → `..` → `...`). Finishing freezes an entry in place — its position never changes, only the icon flips. Streamed assistant text grows in place as the run's last line and settles into plain terminal-colored text at the turn boundary. The feed is scrollable (`↑↓`, `PgUp/PgDn`, `Home`/`End`): the view pins to the end and auto-follows new entries; scrolling up unpins (a `⋮ N earlier` marker appears), and reaching the bottom again re-pins. Both foreground and background runs appear here; a foreground run stays listed while its delegate call blocks the main agent.
 
-Below the feed sits a steer input box: type a correction and press Enter to queue it into the focused run (only while it is running). The message appears immediately in the feed as an `↩ steer:` entry and is delivered to the child after its current tool batch, before its next LLM call — the run keeps its progress. `Esc` closes the overlay.
+The **brief page** shows the run's inputs and vitals at full width: the task and context verbatim (wrapped; head+tail elided beyond 20k chars), the reference file list annotated with `✓`/`·` for whether the child's tool calls actually touched each file, usage and time stats, the fallback trace, and a stderr tail on failures.
+
+Steer input is modal so keys never conflict with typing: in browse mode `s` opens the editor, `Enter` queues the message into the focused run (only while it is running) and returns to browse, `Esc` cancels and clears. The message appears immediately in the feed as an `↩ steer:` entry and is delivered to the child after its current tool batch, before its next LLM call — the run keeps its progress. `Esc` in browse mode closes the overlay.
 
 ## Dependencies
 
@@ -150,11 +152,18 @@ Override, disable, or add subagent roles via `agentOverrides`. Built-in and cust
 }
 ```
 
-**Required fields for custom roles:** `role`, `description`, `examples`, `decisionTrigger`, `systemPrompt`. `tools` is optional — absent means all tools, a list restricts to those exact tool names.
+**Required fields for custom roles:** `role`, `description`, `examples`, `decisionTrigger`, `systemPrompt`.
+
+**Tool policy (optional, pick exactly one):**
+
+- `tools` — exact-name allowlist: absent means all tools, a list restricts to exactly those tool names, an **empty array means zero tools**.
+- `excludeTools` — denylist: everything except the listed tool names (handy for e.g. withholding interactive tools from an otherwise full-access role). Absent or empty means no restriction.
+
+Configuring both on the same role is an error — the role is skipped with an error notification at session start.
 
 **Optional fields:** `subagentRoles` (roles this role can spawn via delegate), `timeout` (per-role active-time timeout in seconds; unset or `0` is unlimited, negative values normalize to `0`), `maxTurns` / `maxCost` (per-role budget overrides; unset uses the top-level `maxTurns` / `maxCost` setting, `0` is unlimited, negative values normalize to `0`), `fallbackRole` (backup pi-model-roles role the whole run is retried on after a provider error; unset means no retry — see [Fallback observability](#fallback-observability)).
 
-Invalid custom roles (missing required fields) are silently skipped with an error notification at session start.
+Invalid custom roles (missing required fields) are skipped with an error notification at session start.
 
 ## Usage (by the main model)
 

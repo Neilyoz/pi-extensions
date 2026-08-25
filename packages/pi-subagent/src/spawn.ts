@@ -132,6 +132,88 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 }
 
 /**
+ * Build the pi CLI args for one child run (RPC mode).
+ *
+ * Tool policy mirrors pi's CLI flags in three mutually exclusive states
+ * (tools + excludeTools together is rejected at role resolution):
+ *   - `tools` set      → exact allowlist (`--tools`; empty = `--no-tools`, literally zero tools)
+ *   - `excludeTools` set → denylist (`--exclude-tools`; empty ≡ absent — nothing excluded)
+ *   - neither          → all tools (no flag)
+ *
+ * @internal — exported for testing.
+ */
+export function buildChildArgs(
+  modelRef: string,
+  options: {
+    thinking?: string;
+    tools?: string[];
+    excludeTools?: string[];
+    systemPrompt?: string;
+  },
+  tmpDir: string,
+): string[] {
+  const args: string[] = ["--mode", "rpc", "--no-session", "--model", modelRef];
+
+  if (options.thinking) {
+    args.push("--thinking", options.thinking);
+  }
+
+  if (options.tools) {
+    if (options.tools.length > 0) {
+      args.push("--tools", options.tools.join(","));
+    } else {
+      args.push("--no-tools");
+    }
+  } else if (options.excludeTools && options.excludeTools.length > 0) {
+    args.push("--exclude-tools", options.excludeTools.join(","));
+  }
+
+  // System prompt channel: inline text via --append-system-prompt. pi's
+  // resolvePromptInput treats an existing path as a file to read and any
+  // non-path string as literal text, so structured blocks go directly — no
+  // temp file, zero disk I/O.
+  if (options.systemPrompt?.trim()) {
+    args.push(
+      "--append-system-prompt",
+      `<subagent_role>\n${options.systemPrompt.trim()}\n</subagent_role>`,
+    );
+  }
+  args.push(
+    "--append-system-prompt",
+    `<subagent_env>\nPI_SUBAGENT_TMPDIR=${tmpDir}\nAvailable as $PI_SUBAGENT_TMPDIR in bash. Use for git clone and scratch files.\n</subagent_env>`,
+  );
+  // Shared behavioral policy for EVERY subagent run — built-in roles and
+  // agentOverrides customs alike. Role prompts (roles.ts) shape WHAT a role
+  // does; this shapes HOW any subagent behaves when the task exceeds its
+  // actual capabilities: report the gap and stop instead of improvising
+  // workarounds until timeout.
+  args.push(
+    "--append-system-prompt",
+    [
+      "<subagent_policy>",
+      "Before attempting the task, check it against your actual capabilities in this",
+      "session — the tool list here is definitive.",
+      "- If the task needs a capability you do not have (web access, bash, file",
+      "  writes, ...) or material that is not present locally or in the provided",
+      "  context/files, it is out of scope for you. Do NOT improvise workarounds.",
+      '- "Cannot complete" means a capability or material gap — not "difficult" or',
+      '  "uncertain". If it is merely hard, keep working within your tools.',
+      "- When you hit a genuine gap, stop early and return:",
+      "  ## Cannot complete",
+      "  - Missing: the capability or material that is absent",
+      "  - Needed: what would complete the task",
+      "  - Found: partial findings so far (optional)",
+      "",
+      'An early "cannot complete" report is a successful outcome; grinding on',
+      "impossible workarounds until timeout is the failure.",
+      "</subagent_policy>",
+    ].join("\n"),
+  );
+
+  return args;
+}
+
+/**
  * Compose the initial RPC prompt message: reference files as <file> blocks,
  * then context and task as structured tags — the same shape the child saw in
  * json mode (@file arguments wrapped by pi's processFileArguments, followed by
@@ -177,6 +259,8 @@ export async function spawnSubagent(
     cwd?: string;
     /** Thinking level passed to the child pi process when the role defines one. */
     thinking?: string;
+    /** Extra tools withheld from the child (denylist); ignored when `tools` is set. */
+    excludeTools?: string[];
     tools?: string[];
     systemPrompt?: string;
     /** Extra context delivered as a separate channel from the task. */
@@ -232,64 +316,12 @@ export async function spawnSubagent(
   let tmpDir: string | null = null;
 
   try {
-    // Build CLI args. RPC mode (not json): stdin carries the initial prompt and
-    // mid-run steering commands; stdout streams the same agent events.
-    const args: string[] = ["--mode", "rpc", "--no-session", "--model", modelRef];
-
-    if (options.thinking) {
-      args.push("--thinking", options.thinking);
-    }
-
-    if (options.tools && options.tools.length > 0) {
-      args.push("--tools", options.tools.join(","));
-    }
-
     // Scratch dir handed to the child as PI_SUBAGENT_TMPDIR for its bash work
     // (e.g. git clone). The initial prompt goes over stdin, so there is no
     // argv length limit and no spill-to-tempfile channel anymore.
     tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
 
-    // ── System prompt channel: inline text via --append-system-prompt ──
-    // pi's resolvePromptInput treats an existing path as a file to read and any
-    // non-path string as literal text, so we pass structured blocks directly —
-    // no temp file, zero disk I/O. Multiple flags are joined with "\n\n".
-    if (options.systemPrompt?.trim()) {
-      args.push(
-        "--append-system-prompt",
-        `<subagent_role>\n${options.systemPrompt.trim()}\n</subagent_role>`,
-      );
-    }
-    args.push(
-      "--append-system-prompt",
-      `<subagent_env>\nPI_SUBAGENT_TMPDIR=${tmpDir}\nAvailable as $PI_SUBAGENT_TMPDIR in bash. Use for git clone and scratch files.\n</subagent_env>`,
-    );
-    // Shared behavioral policy for EVERY subagent run — built-in roles and
-    // agentOverrides customs alike. Role prompts (roles.ts) shape WHAT a role
-    // does; this shapes HOW any subagent behaves when the task exceeds its
-    // actual capabilities: report the gap and stop instead of improvising
-    // workarounds until timeout.
-    args.push(
-      "--append-system-prompt",
-      [
-        "<subagent_policy>",
-        "Before attempting the task, check it against your actual capabilities in this",
-        "session — the tool list here is definitive.",
-        "- If the task needs a capability you do not have (web access, bash, file",
-        "  writes, ...) or material that is not present locally or in the provided",
-        "  context/files, it is out of scope for you. Do NOT improvise workarounds.",
-        '- "Cannot complete" means a capability or material gap — not "difficult" or',
-        '  "uncertain". If it is merely hard, keep working within your tools.',
-        "- When you hit a genuine gap, stop early and return:",
-        "  ## Cannot complete",
-        "  - Missing: the capability or material that is absent",
-        "  - Needed: what would complete the task",
-        "  - Found: partial findings so far (optional)",
-        "",
-        'An early "cannot complete" report is a successful outcome; grinding on',
-        "impossible workarounds until timeout is the failure.",
-        "</subagent_policy>",
-      ].join("\n"),
-    );
+    const args = buildChildArgs(modelRef, options, tmpDir);
 
     // ── Initial prompt channel: one RPC prompt command over stdin ──
     // RPC mode rejects @file argv, so reference files are inlined here as
@@ -366,6 +398,20 @@ export async function spawnSubagent(
 
       // RPC command acknowledgements ("response" lines) carry no agent state.
       if (event.type === "response") return;
+
+      // The child is a headless worker — nobody can answer its dialogs.
+      // RPC-mode ctx.ui.select/confirm/input emit extension_ui_request and
+      // park the child's extension on a promise that has NO default timeout;
+      // without a response the child hangs until the run timeout kills it.
+      // Answer immediately with cancelled:true — the standard "user declined"
+      // semantics (undefined/false) extensions already handle. Fire-and-forget
+      // methods (notify/setStatus/setWidget/setTitle) need no answer.
+      if (event.type === "extension_ui_request" && event.id) {
+        if (event.method === "select" || event.method === "confirm" || event.method === "input") {
+          sendCommand({ type: "extension_ui_response", id: event.id, cancelled: true });
+        }
+        return;
+      }
 
       // RPC mode is a resident server. agent_end only marks one low-level run
       // and may be followed by an automatic retry, compaction, or queued
