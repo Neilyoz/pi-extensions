@@ -42,6 +42,7 @@ import {
   terminalResultLine,
   buildDisplayItems,
   formatToolCall,
+  briefFilesUsed,
 } from "./utils.ts";
 import type { ActivityEntry, SubagentResult, SubagentRole } from "./types.ts";
 
@@ -747,5 +748,53 @@ describe("streamed-text activity entries", () => {
       describeCurrentActivity({ activityLog: [textEntry("done", "hello")] }),
       "responded",
     );
+  });
+});
+
+describe("briefFilesUsed", () => {
+  const call = (toolName: string, args: Record<string, any>): ActivityEntry => ({
+    kind: "toolCall",
+    id: `tc-${toolName}`,
+    status: "done",
+    toolName,
+    args,
+  });
+  const F1 = "/Users/x/proj/src/a.ts";
+  const F2 = "/Users/x/proj/docs/guide.md";
+
+  test("marks a file matched by an exact-path arg", () => {
+    const used = briefFilesUsed([F1, F2], [call("read", { file_path: F1 })]);
+    assert.equal(used.get(F1), true);
+    assert.equal(used.get(F2), false);
+  });
+
+  test("marks a file referenced inside a bash command", () => {
+    const used = briefFilesUsed([F1], [call("bash", { command: `cat ${F1} | head -5` })]);
+    assert.equal(used.get(F1), true);
+  });
+
+  test("marks a file the child addressed by relative path", () => {
+    const used = briefFilesUsed([F1], [call("edit", { file_path: "src/a.ts" })]);
+    assert.equal(used.get(F1), true);
+  });
+
+  test("ignores short separator-less values — no false positives", () => {
+    const used = briefFilesUsed([F1], [call("grep", { pattern: "a.ts" })]);
+    assert.equal(used.get(F1), false);
+  });
+
+  test("collects strings from nested args one level deep", () => {
+    const used = briefFilesUsed([F1], [
+      call("edit", { edits: [{ oldText: "x", path: F1 }] }),
+    ]);
+    assert.equal(used.get(F1), true);
+  });
+
+  test("skips non-toolCall entries and empty file lists", () => {
+    assert.equal(briefFilesUsed(undefined, [call("read", { file_path: F1 })]).size, 0);
+    const used = briefFilesUsed([F1], [
+      { kind: "text", id: "text-0", status: "done", text: "hi" },
+    ]);
+    assert.equal(used.get(F1), false);
   });
 });

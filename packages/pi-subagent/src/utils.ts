@@ -269,6 +269,56 @@ export function renderDisplayItems(
   return text.trimEnd();
 }
 
+// ── Brief page (subagent:view detail view) ─────────────────────
+
+/** Collect string values from a tool call's args, up to a small nesting depth. */
+function argStrings(args: Record<string, any> | undefined): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown, depth: number): void => {
+    if (typeof v === "string") {
+      out.push(v);
+    } else if (depth > 0 && Array.isArray(v)) {
+      for (const item of v) walk(item, depth - 1);
+    } else if (depth > 0 && v && typeof v === "object") {
+      for (const item of Object.values(v)) walk(item, depth - 1);
+    }
+  };
+  walk(args, 3);
+  return out;
+}
+
+/** Arg values shorter than this (and without a separator) are ignored as path candidates. */
+const PATH_MATCH_MIN = 5;
+
+/**
+ * Cross-annotation for the brief page's file list: for each delegate
+ * reference file, did any tool call in the activity log touch it? Heuristic
+ * string match — a hit is either an arg containing the full path (absolute
+ * use, bash references) or the file path ending with the arg (the child
+ * using a relative form). Short separator-less values never match, so plain
+ * query strings cannot false-positive.
+ */
+export function briefFilesUsed(
+  files: string[] | undefined,
+  activityLog: ActivityEntry[],
+): Map<string, boolean> {
+  const used = new Map<string, boolean>((files ?? []).map((f) => [f, false]));
+  if (used.size === 0) return used;
+  for (const entry of activityLog) {
+    if (entry.kind !== "toolCall") continue;
+    for (const v of argStrings(entry.args)) {
+      if (v.length < PATH_MATCH_MIN) continue;
+      for (const [file, hit] of used) {
+        if (hit) continue;
+        if (v.includes(file) || (v.includes("/") && file.endsWith(v))) {
+          used.set(file, true);
+        }
+      }
+    }
+  }
+  return used;
+}
+
 // ── Shared result-view composition ─────────────────────────────
 // Used by the foreground delegate row (./render.ts) and the background
 // wait/check rows (./render-async.ts) so every view renders the same
