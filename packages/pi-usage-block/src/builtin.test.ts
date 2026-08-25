@@ -46,8 +46,8 @@ test("OpenAI Codex polls the ChatGPT usage endpoint and maps both quota windows"
 
   const windows = await provider.fetchUsage();
   assert.deepEqual(windows, [
-    { period: "5h", used: 42, limit: 100, unit: "tokens", resetAt: new Date(1_900_000_000 * 1000) },
-    { period: "weekly", used: 7.5, limit: 100, unit: "tokens", resetAt: new Date(1_900_100_000 * 1000) },
+    { period: "primary", used: 42, limit: 100, unit: "tokens", resetAt: new Date(1_900_000_000 * 1000) },
+    { period: "secondary", used: 7.5, limit: 100, unit: "tokens", resetAt: new Date(1_900_100_000 * 1000) },
   ]);
   assert.equal(requestUrl, "https://chatgpt.com/backend-api/wham/usage");
   assert.equal(new Headers(requestHeaders).get("authorization"), `Bearer ${token}`);

@@ -165,8 +165,8 @@ async function openaiCodexUsage(
   const rateLimit = data?.rate_limit ?? data?.rateLimit;
   if (!rateLimit) return [];
   return [
-    codexWindow(rateLimit.primary_window ?? rateLimit.primaryWindow, "5h"),
-    codexWindow(rateLimit.secondary_window ?? rateLimit.secondaryWindow, "weekly"),
+    codexWindow(rateLimit.primary_window ?? rateLimit.primaryWindow, "primary"),
+    codexWindow(rateLimit.secondary_window ?? rateLimit.secondaryWindow, "secondary"),
   ].filter((window): window is QuotaWindow => window !== undefined);
 }
 
