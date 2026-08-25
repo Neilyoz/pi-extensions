@@ -33,6 +33,7 @@ async function executeAskUser(
     new AbortController().signal,
     () => {},
     {
+      mode: "tui",
       hasUI: true,
       ui: {
         custom(factory: any) {

@@ -1281,8 +1281,15 @@ export default function askUserExtension(pi: ExtensionAPI) {
     parameters: AskUserParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (!ctx.hasUI) {
-        return errorResult("Error: UI not available (running in non-interactive mode)");
+      // `ctx.mode`, not `ctx.hasUI`: RPC mode binds a stub uiContext (hasUI is
+      // true there) but ctx.ui.custom() silently returns undefined — panels
+      // are TUI-only. Headless hosts of this session (pi-subagent children,
+      // scripted pi runs) must fail fast with an actionable message so the
+      // model proceeds autonomously instead of parsing a TypeError.
+      if (ctx.mode !== "tui") {
+        return errorResult(
+          "Error: ask_user is not available in this session mode — interactive panels require a TUI session. Proceed autonomously without user input.",
+        );
       }
       if (params.questions.length === 0) {
         return errorResult("Error: No questions provided");
