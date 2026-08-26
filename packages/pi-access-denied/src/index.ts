@@ -34,8 +34,8 @@ import { loadConfig } from "./config.ts";
 import { PathManager } from "./path-manager.ts";
 import { resolveTarget, toPosix } from "./paths.ts";
 import { extractBashTargetsDetailed, type ExtractedTarget } from "./bash-extract.ts";
-import { DEFAULT_CONFIG, type AccessMode, type AuthResult, type SupportedTool } from "./types.ts";
-import { AuthPanel } from "./auth-panel.ts";
+import { DEFAULT_CONFIG, type AccessMode, type AuthResult, type Choice, type SupportedTool } from "./types.ts";
+import { AuthPanel, CHOICE_LABELS, CHOICES } from "./auth-panel.ts";
 
 const GLOBAL_KEY = "__piAccessDenied";
 const STATUS_KEY = "access-denied";
@@ -127,6 +127,33 @@ async function promptDecision(
   );
 }
 
+/**
+ * Dialog-based authorization for non-TUI sessions (RPC / ACP hosts). One
+ * select() per out-of-bounds path — the same four actions as the AuthPanel,
+ * minus the global deny-reason note (input() dialogs are not reliably answered
+ * by ACP adapters; rivet-dev/pi-acp auto-cancels them). Cancelling any single
+ * path cancels the whole authorization.
+ */
+async function dialogDecision(
+  toolName: string,
+  violations: ExtractedTarget[],
+  ctx: ExtensionContext,
+): Promise<AuthResult> {
+  const header = toolName === "bash" ? "bash command" : `${toolName}`;
+  const options = CHOICES.map((c) => CHOICE_LABELS[c]);
+  const byLabel = new Map(CHOICES.map((c) => [CHOICE_LABELS[c], c]));
+  const choices = new Map<string, Choice>();
+  for (const v of violations) {
+    const title = v.source
+      ? `access-denied · ${header} wants ${v.path}\nvia: ${v.source}`
+      : `access-denied · ${header} wants ${v.path}`;
+    const picked = await ctx.ui.select(title, options);
+    if (picked === undefined) return { cancelled: true, choices };
+    choices.set(v.path, byLabel.get(picked) ?? "allow");
+  }
+  return { cancelled: false, choices };
+}
+
 // ── Extension ─────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -199,14 +226,16 @@ export default function (pi: ExtensionAPI) {
       };
     }
 
-    // prompt mode — custom panels are TUI-only. RPC has UI helpers, but not
-    // ctx.ui.custom(); print/json also cannot authorize interactively.
-    if (ctx.mode !== "tui") {
-      return { block: true, reason: `Blocked (TUI authorization unavailable): ${formatPaths(outside.map((t) => t.path))}` };
-    }
-
-    // 6. Prompt for the outside paths.
-    const result = await promptDecision(toolName, outside, ctx);
+    // 6. Prompt for the outside paths. TUI gets the custom AuthPanel; RPC/ACP
+    // hosts get dialog-based authorization via ctx.ui.select (answered through
+    // pi's extension_ui_request sub-protocol). `ctx.mode`, not `ctx.hasUI`:
+    // ctx.ui.custom() silently returns undefined in rpc mode even though hasUI
+    // is true there. print/json have no host to answer dialogs either way —
+    // select() resolves undefined and the call is dismissed (soft deny).
+    const result =
+      ctx.mode === "tui"
+        ? await promptDecision(toolName, outside, ctx)
+        : await dialogDecision(toolName, outside, ctx);
     if (result.cancelled) {
       // dismissed — soft deny so the agent learns it was not authorized
       return { block: true, reason: "Authorization dismissed" };

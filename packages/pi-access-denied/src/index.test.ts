@@ -112,7 +112,7 @@ test("mixed always-allow and deny persists the grant while blocking the call", a
   assert.ok(notices.at(-1)?.includes(`  • ${alwaysAllowed}   (session)`));
 });
 
-test("prompt mode blocks outside access outside TUI without calling custom UI", async () => {
+test("prompt mode outside TUI falls back to select() dialogs — allow passes through", async () => {
   project = fs.mkdtempSync(path.join(os.tmpdir(), "ad-rpc-test-"));
   fs.mkdirSync(path.join(project, ".pi"));
   fs.writeFileSync(
@@ -137,6 +137,7 @@ test("prompt mode blocks outside access outside TUI without calling custom UI", 
   shutdown = () => stop();
 
   let customCalled = false;
+  const selections: string[][] = [];
   const ctx = {
     cwd: project,
     mode: "rpc",
@@ -147,6 +148,12 @@ test("prompt mode blocks outside access outside TUI without calling custom UI", 
       custom: async () => {
         customCalled = true;
         throw new Error("custom should not be called outside TUI");
+      },
+      // ACP hosts answer extension_ui_request via this path.
+      select: async (title: string, options: string[]) => {
+        selections.push(options);
+        assert.ok(title.includes("/etc/passwd"));
+        return "Allow";
       },
     },
   };
@@ -163,8 +170,122 @@ test("prompt mode blocks outside access outside TUI without calling custom UI", 
   );
 
   assert.equal(customCalled, false);
-  assert.deepEqual(result, {
-    block: true,
-    reason: "Blocked (TUI authorization unavailable):   • /etc/passwd",
-  });
+  assert.equal(result, undefined); // allowed through after user picked Allow
+  assert.deepEqual(selections, [["Allow", "Always allow", "Deny", "Always deny"]]);
+});
+
+test("prompt mode outside TUI: dismissing the dialog soft-denies", async () => {
+  project = fs.mkdtempSync(path.join(os.tmpdir(), "ad-rpc-test-"));
+  fs.mkdirSync(path.join(project, ".pi"));
+  fs.writeFileSync(
+    path.join(project, ".pi", "settings.json"),
+    JSON.stringify({ accessDenied: { mode: "prompt" } }),
+  );
+
+  const handlers = new Map<string, Handler>();
+  accessDenied({
+    on(event: string, handler: Handler) {
+      handlers.set(event, handler);
+    },
+    registerCommand() {},
+  } as any);
+
+  const start = handlers.get("session_start");
+  const toolCall = handlers.get("tool_call");
+  const stop = handlers.get("session_shutdown");
+  assert.ok(start);
+  assert.ok(toolCall);
+  assert.ok(stop);
+  shutdown = () => stop();
+
+  const ctx = {
+    cwd: project,
+    mode: "rpc",
+    hasUI: true,
+    ui: {
+      theme: { fg: (_color: string, text: string) => text },
+      setStatus() {},
+      // No host answers (or user cancels): select resolves undefined.
+      select: async () => undefined,
+    },
+  };
+
+  await start({}, ctx);
+  const result = await toolCall(
+    {
+      type: "tool_call",
+      toolCallId: "rpc-dismissed",
+      toolName: "bash",
+      input: { command: "cat /etc/passwd" },
+    },
+    ctx,
+  );
+
+  assert.deepEqual(result, { block: true, reason: "Authorization dismissed" });
+});
+
+test("prompt mode outside TUI: always-deny via dialog is remembered for the session", async () => {
+  project = fs.mkdtempSync(path.join(os.tmpdir(), "ad-rpc-test-"));
+  fs.mkdirSync(path.join(project, ".pi"));
+  fs.writeFileSync(
+    path.join(project, ".pi", "settings.json"),
+    JSON.stringify({ accessDenied: { mode: "prompt" } }),
+  );
+
+  const handlers = new Map<string, Handler>();
+  accessDenied({
+    on(event: string, handler: Handler) {
+      handlers.set(event, handler);
+    },
+    registerCommand() {},
+  } as any);
+
+  const start = handlers.get("session_start");
+  const toolCall = handlers.get("tool_call");
+  const stop = handlers.get("session_shutdown");
+  assert.ok(start);
+  assert.ok(toolCall);
+  assert.ok(stop);
+  shutdown = () => stop();
+
+  let calls = 0;
+  const ctx = {
+    cwd: project,
+    mode: "rpc",
+    hasUI: true,
+    ui: {
+      theme: { fg: (_color: string, text: string) => text },
+      setStatus() {},
+      select: async () => {
+        calls++;
+        return "Always deny";
+      },
+    },
+  };
+
+  await start({}, ctx);
+  const first = await toolCall(
+    {
+      type: "tool_call",
+      toolCallId: "rpc-deny",
+      toolName: "bash",
+      input: { command: "cat /etc/passwd" },
+    },
+    ctx,
+  );
+  assert.ok(first && typeof first === "object" && "block" in first);
+  assert.ok((first as any).reason.includes("Blocked by access-denied"));
+
+  // Second call hits the remembered session deny without prompting again.
+  const second = await toolCall(
+    {
+      type: "tool_call",
+      toolCallId: "rpc-deny-2",
+      toolName: "bash",
+      input: { command: "cat /etc/passwd" },
+    },
+    ctx,
+  );
+  assert.ok(second && typeof second === "object" && "block" in second);
+  assert.equal(calls, 1);
 });

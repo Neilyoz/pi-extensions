@@ -47,11 +47,11 @@ export interface AuthPanelCallbacks {
   onResult: (result: AuthResult) => void;
 }
 
-/** The four actions, in left-to-right bar order. */
-const CHOICES: readonly Choice[] = ["allow", "always-allow", "deny", "always-deny"];
+/** The four actions, in left-to-right bar order (also the dialog fallback's option order). */
+export const CHOICES: readonly Choice[] = ["allow", "always-allow", "deny", "always-deny"];
 
-/** Human-readable labels for the horizontal bar (Title Case). */
-const CHOICE_LABELS: Record<Choice, string> = {
+/** Human-readable labels for the horizontal bar / dialog options (Title Case). */
+export const CHOICE_LABELS: Record<Choice, string> = {
   allow: "Allow",
   "always-allow": "Always allow",
   deny: "Deny",

@@ -172,9 +172,11 @@ A bash command is an arbitrary shell string, so **perfect static path analysis i
 
 This matching is best-effort, not an absolute sandbox: static analysis cannot resolve every shell expansion, so it favors low noise over completeness. The goal is to correct common agent behavior with little noise, not to understand every possible shell expansion. For enforced isolation, use a container or remote execution boundary.
 
-## Non-interactive mode
+## Non-TUI sessions (RPC / ACP)
 
-The authorization panel uses pi's TUI-only `ctx.ui.custom()` API. In print, JSON, and RPC modes, `prompt` mode cannot open that panel and blocks matched out-of-project calls with `TUI authorization unavailable`. Set `mode` to `allow` when running non-interactively and this behavior guard is not wanted.
+The authorization panel is built on pi's TUI-only `ctx.ui.custom()` API. In RPC/ACP sessions (e.g. via `pi-acp` in Zed) the gate falls back to one `ctx.ui.select()` dialog per out-of-bounds path, offering the same four actions (Allow / Always allow / Deny / Always deny). The answers flow through pi's extension UI sub-protocol and are answered by the host adapter; "always" choices are remembered for the session exactly like panel decisions.
+
+Known gaps versus the TUI panel: there is no global deny-reason input, so a deny always carries the default `Blocked by access-denied` message — ACP has no text-input request primitive (not an adapter gap), so the reason note cannot be carried. Dismissing any dialog cancels the whole authorization — a soft deny. In print/JSON mode no host answers dialogs at all, so out-of-bounds calls resolve as `Authorization dismissed`. Set `mode` to `allow` when running non-interactively and this behavior guard is not wanted.
 
 ## Design notes
 
