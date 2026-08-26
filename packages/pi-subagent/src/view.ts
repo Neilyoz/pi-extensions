@@ -438,11 +438,13 @@ export class SubagentViewPanel implements Component, Focusable {
 
     // ── Tab row: one cell per run; the focused one is highlighted. ──
     if (runs.length > 0) {
+      // Brackets stay on every cell, focused included — the selectedBg +
+      // accent highlight is the indicator, so Tab doesn't shift text.
       const cells = runs.map((r) => {
         const isFocused = r === focused;
         const label = `${runIcon(r.snapshot, fg)} ${r.id} ${r.role}`;
         const styled = isFocused ? th.bg("selectedBg", fg("accent", label)) : fg("dim", label);
-        return isFocused ? styled : `[${styled}]`;
+        return `[${styled}]`;
       });
       lines.push(
         row(
