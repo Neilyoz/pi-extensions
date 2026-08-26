@@ -352,12 +352,21 @@ npm **从未实现** `workspace:` 协议（npm/cli#8845，文档写了但解析�
 
 **新建包时必须遵循此规则**，否则回归 lockfile 抖动问题。
 
-### 判断交互能力用 `ctx.mode`，不要用 `ctx.hasUI`
+### 交互 UI 按 `ctx.mode` 分轨道设计，不要用 `ctx.hasUI`
 
-扩展里判断"当前会话能否与用户交互"，用 `ctx.mode`（值域 `"tui" | "rpc" | "print" | "json"`），不要用 `ctx.hasUI`。
+pi 有四种会话模式（`tui | rpc | print | json`）。注册交互 UI 的插件必须**双轨设计**：TUI 用 `ctx.ui.custom()` 面板（完整功能），其余模式降级到 `ctx.ui.select()/confirm()` 对话框——判断用 `ctx.mode`，不要用 `ctx.hasUI`。
 
-**为什么 hasUI 会说谎**：RPC 模式绑了一个 stub uiContext（`select/confirm/input` 走 `extension_ui_request` 事件等宿主应答，`custom()` 却静默返回 `undefined`——TUI 组件工厂无法跨 JSONL 边界），所以 `hasUI` 在 rpc 下是 **true**。pi-subagent 的子进程正跑在 rpc 模式：ask_user 曾因此漏过 hasUI 守卫，在 `result.answers` 上抛裸 TypeError。
+**为什么 hasUI 会说谎**：RPC 模式绑了一个 stub uiContext（`select/confirm/input/editor` 走 `extension_ui_request` 子协议等宿主应答，是可用的；`custom()` 却静默返回 `undefined`——TUI 组件工厂无法跨 JSONL 边界），所以 `hasUI` 在 rpc 下是 **true**。pi-subagent 的子进程正跑在 rpc 模式：ask_user 曾因此漏过 hasUI 守卫，在 `result.answers` 上抛裸 TypeError。
 
-**正确做法**：需要 TUI 面板（`ctx.ui.custom`）的功能用 `ctx.mode !== "tui"` 守卫，返回可执行的错误信息（如 "proceed autonomously without user input"）让 LLM 自行换路。dialog 类（select/confirm/input）在 rpc 下依赖宿主应答：pi-subagent 作为宿主对 `extension_ui_request` 自动回 `cancelled: true`，扩展拿到标准"用户拒绝"语义（undefined/false）体面降级，而非无限悬挂。
+**降级轨道的能力边界按协议交集承诺**：`select/confirm` 是 pi 扩展子协议与 ACP（`session/request_permission` 的 option name/optionId 为自由字符串）共同原生保证的部分，任意多选一问题都能无损承载；`input/editor` 在 ACP 无文本输入原语（协议缺口，非适配器缺陷），只能做自适应探测（如先验证一次 input 成功再开放依赖它的功能），不可无条件轮询。降级后的 JSON 契约必须与 TUI 轨道完全一致，让 LLM 不感知模式差异。print/json 无宿主应答，dialog 解析为取消即体面语义。
 
-参考：pi-access-denied 的 `ctx.mode !== "tui"` 守卫、pi-ask-user 的同款修复。
+参考实现：pi-access-denied 的 `dialogDecision`、pi-ask-user 的 `dialogAsk`（均为 `tui ? 原 custom() 调用 : dialog 降级` 三元双轨）。
+
+### 新插件开发默认面向多模式（RPC/ACP）
+
+写插件时默认考虑非 TUI 宿主（ACP 编辑器、`--mode rpc`、print/json），按以下能力分层自查：
+
+- **工具结果一律返回纯文本 `content`** —— 四种会话模式共通的载体，天然免改造。`renderCall/renderResult` 等 pi-tui 渲染器仅在 TUI 加载，RPC 下自动缺席且无害；`execute()` 内不得依赖渲染器的存在。
+- **fire-and-forget 类 UI 在 RPC 原生可用**：`setStatus`、`setWidget(string[])`、`notify` 经 `extension_ui_request` 子协议转发。组件工厂类（`custom/setFooter/setEditorComponent/getEditorText`）是 TUI-only，RPC 下 no-op 或返回空值——用它们的功能要么双轨降级（见上条），要么接受静默缺席。
+- **extension commands 当前在主流 ACP 适配器中不可达**：依赖命令入口的交互功能要么加 `ctx.mode` 守卫并给出可执行提示，要么同时注册工具等价物。
+- **改完跑一遍模式自查**：这个插件在 Zed + pi-acp 里会怎样？工具能调、进度能看、交互有降级或明确不可达——三者之一即可，不允许「调用即崩」。

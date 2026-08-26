@@ -36,6 +36,16 @@ Pure npm packages — no `pi.extensions` entry point, no hooks/tools/commands. I
 |---------|-------------|
 | [`pi-usage-block-core`](./packages/pi-usage-block-core) | Shared types and singleton registry for usage quota reporting |
 
+## ACP / headless support
+
+All extensions here work in [ACP](https://agentclientprotocol.com) hosts (e.g. Zed via `pi-acp`) and other non-TUI pi sessions (`--mode rpc`, print, JSON). Tool results are plain text, which every session mode shares; the rich TUI renderers only load in terminal sessions and are simply absent elsewhere.
+
+Current state:
+
+- **Interactive degradation** — `pi-access-denied` and `pi-ask-user` fall back to `select`/`confirm` dialogs through pi's extension UI sub-protocol when a host can answer them, with the JSON result contract kept identical to the TUI panels. See each package's "Non-TUI sessions" section for what carries over and what doesn't.
+- **Works as-is** — `pi-scout`'s pending indicator (`setWidget` with string lines), `pi-usage-block`'s status entries, and `pi-subagent`'s live progress streaming all ride fire-and-forget or text channels that RPC mode supports natively; subagents themselves run as independent child processes regardless of parent mode.
+- **Terminal-only by nature** — `pi-editor-shell`'s editor chrome no-ops outside a real terminal. The `pi-command-palette` and `pi-peek-user` overlays are command-entry UI; current ACP adapters don't forward extension slash commands at all, so they're simply unreachable rather than broken.
+
 ## Installation
 
 ```bash
