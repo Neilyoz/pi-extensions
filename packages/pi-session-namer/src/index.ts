@@ -1,18 +1,22 @@
 /**
- * pi-session-namer — Auto-name pi sessions using a cheap side agent.
+ * pi-session-namer — Session naming with layered correction paths.
  *
- * On the first user prompt of a new session, calls a lightweight side agent
- * to generate a concise session title, then sets it via pi.setSessionName().
- * Subsequent turns are skipped with near-zero overhead.
+ * L1: on the first user prompt of a new session, a lightweight side agent
+ *     generates a concise title so the session is never "Untitled".
+ * L2: `/namer:rename` regenerates from the accumulated user-message window
+ *     when the user finds the initial name stale.
+ * L3: `rename_session` tool lets the main agent name the session on the
+ *     user's request — the agent's context is the best naming source.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
 import type { ModelRolesAPI } from "@d3ara1n/pi-model-roles";
+import { Type } from "typebox";
 import { DEFAULT_CONFIG } from "./types.ts";
 import type { SessionNamerConfig } from "./types.ts";
 import { loadNamerConfig } from "./config.ts";
-import { generateSessionName, type NamingExchange } from "./namer.ts";
+import { cleanSessionName, generateSessionName, NAMING_RULES } from "./namer.ts";
 
 export default function sessionNamerExtension(pi: ExtensionAPI) {
   let config: SessionNamerConfig = DEFAULT_CONFIG;
@@ -62,7 +66,7 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
           rolesApi,
           config.sideAgentRole,
           config,
-          { user: event.prompt },
+          { userMessages: [event.prompt] },
         );
 
         pi.setSessionName(name);
@@ -118,14 +122,12 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
     },
   });
 
-  // ── /namer:rename — force regenerate ────────────────────────────
+  // ── /namer:rename — regenerate from the user-message window ─────
   pi.registerCommand("namer:rename", {
-    description: "Regenerate session name from the first exchange",
+    description: "Regenerate session name from the user's messages",
     handler: async (_args, ctx) => {
-      const { user: firstUser, assistant: firstAssistant } = getFirstExchange(
-        ctx.sessionManager.getBranch(),
-      );
-      if (!firstUser?.trim()) {
+      const userMessages = collectUserMessages(ctx.sessionManager.getBranch());
+      if (userMessages.length === 0) {
         ctx.ui.notify("No user prompt available to generate a name from.", "warning");
         return;
       }
@@ -151,7 +153,7 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
           rolesApi,
           config.sideAgentRole,
           config,
-          { user: firstUser, assistant: firstAssistant?.trim() || undefined },
+          { userMessages },
         );
 
         pi.setSessionName(name);
@@ -162,32 +164,56 @@ export default function sessionNamerExtension(pi: ExtensionAPI) {
       }
     },
   });
+
+  // ── rename_session tool — agent-driven naming on user request ───
+  pi.registerTool({
+    name: "rename_session",
+    label: "Rename Session",
+    description:
+      "Set the current session's name — the label shown in the session list. Returns the normalized name actually set (long names are truncated to the configured max length).",
+    promptSnippet: "Rename the current session",
+    promptGuidelines: [
+      "Call only when the user asks to name or rename the session — never rename proactively.",
+    ],
+    parameters: Type.Object({
+      name: Type.String({
+        description: ["The new session name — concise, in the user's language.", ...NAMING_RULES].join(" "),
+      }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const name = cleanSessionName(params.name, config.maxLength);
+      pi.setSessionName(name);
+      ctx.ui.notify(`Session renamed: ${name}`, "info");
+      return { content: [{ type: "text", text: `Session renamed to: ${name}` }], details: undefined };
+    },
+  });
 }
 
 /**
- * Extract the first user message and first assistant reply from the active
- * branch (leaf → root path), excluding entries on abandoned branches.
+ * Collect user messages from the active branch (root → leaf,
+ * chronological), excluding entries on abandoned branches. Slash-command
+ * invocations are skipped: they are session tooling, not user intent.
  *
  * Uses getBranch() rather than getEntries(): the session file is append-only,
  * so after re-editing the first message (resetLeaf → new root) the old root
  * still precedes the new one in getEntries() and would be picked by mistake.
  * Read live so it survives extension reloads (which reset closure state).
+ *
+ * @internal — exported for testing; command handlers consume it via the
+ * session branch directly.
  */
-function getFirstExchange(entries: unknown[]): { user?: string; assistant?: string } {
-  const result: { user?: string; assistant?: string } = {};
+export function collectUserMessages(entries: unknown[]): string[] {
+  const messages: string[] = [];
   for (const entry of entries as any[]) {
     if (entry?.type !== "message") continue;
     const msg = entry.message;
+    if (msg?.role !== "user") continue;
     const text = extractEntryText(msg?.content);
-    if (!text.trim()) continue;
-    if (msg?.role === "user" && !result.user) {
-      result.user = text;
-    } else if (msg?.role === "assistant" && !result.assistant) {
-      result.assistant = text;
-    }
-    if (result.user && result.assistant) break;
+    if (!text.trim() || text.startsWith("/")) continue;
+    messages.push(text);
   }
-  return result;
+  return messages;
 }
 
 /** Pull text out of a content field that may be a string or a ContentBlock[]. */

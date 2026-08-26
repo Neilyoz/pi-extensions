@@ -1,17 +1,24 @@
 # @d3ara1n/pi-session-namer
 
-Auto-name pi sessions using a cheap side agent.
+Session naming for pi with layered correction paths.
 
-On the first user prompt of a new session, calls a lightweight side agent model
-to generate a concise session title, then sets it via `pi.setSessionName()`.
-Subsequent turns are skipped with near-zero overhead.
+On the first user prompt of a new session, a lightweight side agent generates a
+concise title so the session is never "Untitled". When the initial name goes
+stale (the session drifted from its opening message), two correction paths are
+available: `/namer:rename` regenerates from the accumulated user-message window,
+and the `rename_session` tool lets the main agent name the session directly —
+the agent's full context is the best naming source.
 
 ## Features
 
 - **Zero-config**: Works out of the box with pi-model-roles' `utility` role
 - **First-turn only**: Adds ~0.5-1s latency on the first prompt, zero overhead after
 - **Graceful fallback**: If the side agent fails, truncates the user prompt as name
-- **Manual rename**: `/namer:rename` to regenerate at any time
+- **Manual rename**: `/namer:rename` regenerates from the user's messages —
+  up to 10, windowed to the first 5 and last 5 (the opening defines why the
+  session exists, the latest shows what it became) when the session is longer
+- **Agent rename**: `rename_session` tool lets the main agent set the session
+  name on the user's request, with the full conversation as its source
 
 ## Configuration
 
@@ -42,7 +49,7 @@ Project-level `.pi/settings.json` overrides global settings.
 | `/namer` | Show status and config |
 | `/namer:enable` | Enable auto-naming for the current session |
 | `/namer:disable` | Disable auto-naming for the current session |
-| `/namer:rename` | Regenerate session name from the first exchange |
+| `/namer:rename` | Regenerate session name from the user's messages |
 
 The enable/disable commands are intentionally session-only. For a persistent choice, set `sessionNamer.enabled` in `settings.json`; the extension does not rewrite user configuration files.
 
