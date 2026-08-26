@@ -254,6 +254,17 @@ export interface CheckDetails {
 export type CancelDetails = CheckDetails;
 
 /**
+ * Details for a steer tool result — the echoed correction. Collapsed shows
+ * icon + first line; expanded shows the full message plus the delivery hint
+ * (check is the result-fetcher for the effect, never this row).
+ */
+export interface SteerDetails {
+  id: string;
+  role: string;
+  message: string;
+}
+
+/**
  * Details for the background-run completion notice (custom message
  * `subagent-completion`). The renderer lays these out as a structured notice
  * card; the message's plain `content` string stays as the non-TUI fallback

@@ -33,6 +33,7 @@ import type {
   CheckDetails,
   CompletionNoticeDetails,
   RunViewEntry,
+  SteerDetails,
   SubagentResult,
   WaitDetails,
 } from "./types.ts";
@@ -385,6 +386,54 @@ export const renderCheckResult: RenderResultFn = (result, { expanded }, theme, _
   // freezes the frame before handing it over).
   if (expanded) return checkEntryExpandedContainer(details.result, fg);
   return collapsedText(checkEntryCollapsedText(details.result, fg));
+};
+
+// ── steer: correction echo (check verifies the effect) ──
+
+/**
+ * Factory: the call line shows the run's role, but args carry only id +
+ * message — the registry lookup is injected. Unknown id (e.g. re-rendering a
+ * persisted session where the registry is empty) degrades to the bare id.
+ */
+export function createSteerCallRender(roleOf: (id: string) => string | undefined): RenderCallFn {
+  return (args, theme) => {
+    const id = (args as any).id || "...";
+    const role = roleOf(id);
+    const label = role ? `${id} (${role})` : id;
+    const text = theme.fg("toolTitle", theme.bold("subagent_steer ")) + theme.fg("accent", label);
+    return new Text(text, 0, 0);
+  };
+}
+
+export const renderSteerResult: RenderResultFn = (result, { expanded }, theme) => {
+  const details = result.details as SteerDetails | undefined;
+  if (!details) return collapsedText(contentText(result));
+
+  const fg = theme.fg.bind(theme) as Fg;
+  const icon = fg("accent", "\u21a9"); // ↩ — same marker as steer entries in the activity stream
+  const message = details.message.trim() || "(empty message)";
+
+  // Body carries the correction only — no id/role prefix; the target lives in
+  // the call line and the delivery hint below.
+  if (!expanded) {
+    const firstLine = message.split("\n")[0];
+    return collapsedText(`${icon} ${fg("text", firstLine)}`);
+  }
+
+  const container = new Container();
+  container.addChild(new Text(`${icon} ${fg("text", message)}`, 0, 0));
+  container.addChild(new Spacer(1));
+  container.addChild(
+    new Text(
+      fg(
+        "dim",
+        `${details.id} (${details.role}) — delivered after the current tool batch, verify with subagent_check later`,
+      ),
+      0,
+      0,
+    ),
+  );
+  return container;
 };
 
 // ── cancel: confirmation-only view (check is the result-fetcher) ──

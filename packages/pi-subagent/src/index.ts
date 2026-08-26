@@ -47,6 +47,7 @@ import { buildInboxReminder, injectReminder } from "./reminder.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
 import { createViewPanel } from "./view.ts";
 import {
+  createSteerCallRender,
   renderBackgroundDelegateCall,
   renderBackgroundDelegateResult,
   renderCancelCall,
@@ -54,6 +55,7 @@ import {
   renderCheckCall,
   renderCheckResult,
   renderCompletionNotice,
+  renderSteerResult,
   renderWaitCall,
   renderWaitResult,
 } from "./render-async.ts";
@@ -752,9 +754,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
             text: `Steer queued for ${params.id} (${run.role}) — delivered after its current tool batch. Verify the effect with subagent_check later.`,
           },
         ],
-        details: { id: params.id, role: run.role },
+        details: { id: params.id, role: run.role, message: params.message },
       };
     },
+
+    renderCall: createSteerCallRender((id) => backgroundRuns.get(id)?.role),
+    renderResult: renderSteerResult,
   });
 
   pi.registerTool({
