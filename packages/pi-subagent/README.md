@@ -32,7 +32,7 @@ This means:
 
 | Role | Model Role | Timeout | Tools | Can Delegate To | Description |
 |------|-----------|---------|-------|-----------------|-------------|
-| `explorer` | fast | 900s | read, find, grep | — | Fast code exploration (read-only) |
+| `explorer` | fast | 900s | read, find, grep, bash | — | Fast code exploration incl. git history inspection (read-only) |
 | `reviewer` | heavy | 3600s | read, bash, grep, find | — | Deep code review, runs git/tests for evidence (read-only) |
 | `worker` | default | 2400s | all (no whitelist) | explorer, researcher | Implementation — the only role that can modify files; full tool access (web, MCP, everything) |
 | `researcher` | fast | 2400s | web_search, fetch_content, source_check, get_search_content, read, bash, edit, write, delegate | explorer | Web research + GitHub repo analysis; writes artifacts only inside its temp dir |

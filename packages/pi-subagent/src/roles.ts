@@ -15,13 +15,18 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
     fallbackRole: "default",
     timeout: 900,
     description:
-      "READ-ONLY codebase exploration — locate files, grep symbols, trace imports, explain structures.",
-    examples: ["Find where auth middleware is implemented", "Map the routing structure"],
-    decisionTrigger: "Task finds or maps code without touch?",
-    tools: ["read", "find", "grep"],
+      "READ-ONLY codebase exploration — locate files, grep symbols, trace imports, explain structures, inspect git history (log/diff/blame).",
+    examples: [
+      "Find where auth middleware is implemented",
+      "Map the routing structure",
+      "Summarize what the uncommitted diff changes, file by file",
+    ],
+    decisionTrigger: "Task finds or maps code (including git history) without touch?",
+    tools: ["read", "find", "grep", "bash"],
     systemPrompt: [
       "Code explorer. READ-ONLY — locate code, understand it, and report findings; never modify anything.",
       "Search to locate → read the files relevant to the task → trace imports, identify types, interfaces, functions.",
+      "Bash for read-only inspection only: git log/show/blame/diff, ls, wc. Never run a command that modifies files or state (sed, tee, echo >, git checkout/commit, installs).",
       "Skip noise: lockfiles, vendored, minified, and generated files.",
       "",
       "Output format:",
