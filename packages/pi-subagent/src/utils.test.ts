@@ -41,6 +41,7 @@ import {
   createThrottler,
   terminalResultLine,
   buildDisplayItems,
+  completionNoticeLines,
   formatToolCall,
   briefFilesUsed,
 } from "./utils.ts";
@@ -433,6 +434,60 @@ describe("terminalResultLine", () => {
     assert.equal(
       terminalResultLine(baseResult({ exitCode: 1, errorMessage: "boom\n  at frame 2\nat frame 3" }), id),
       "\u2717 boom at frame 2 at frame 3",
+    );
+  });
+});
+
+// ── completionNoticeLines: background-run completion notice card ──
+describe("completionNoticeLines", () => {
+  // Marker fakes so assertions can see both text and color placement.
+  const fg = (color: string, text: string) => `<${color}>${text}</${color}>`;
+  const bold = (text: string) => `*${text}*`;
+
+  test("header: bracket label + id (role) + plain-text outcome", () => {
+    assert.deepEqual(
+      completionNoticeLines({ id: "sub-3", role: "worker", outcome: "finished" }, fg, bold),
+      [
+        "<customMessageLabel>*[subagent]*</customMessageLabel> " +
+          "<customMessageText>sub-3 (worker)</customMessageText> " +
+          "<customMessageText>finished</customMessageText>",
+      ],
+    );
+  });
+
+  test("failed colors the outcome error-red, cancelled warning-yellow", () => {
+    const failed = completionNoticeLines({ id: "sub-1", role: "x", outcome: "failed" }, fg, bold)[0];
+    assert.ok(failed.includes("<error>failed</error>"));
+    const cancelled = completionNoticeLines(
+      { id: "sub-1", role: "x", outcome: "cancelled" },
+      fg,
+      bold,
+    )[0];
+    assert.ok(cancelled.includes("<warning>cancelled</warning>"));
+  });
+
+  test("task preview on its own line without a prefix, newlines flattened", () => {
+    const lines = completionNoticeLines(
+      {
+        id: "sub-2",
+        role: "explorer",
+        outcome: "finished",
+        task: "Map the routing\nstructure",
+      },
+      fg,
+      bold,
+    );
+    assert.deepEqual(lines[1], "<dim>Map the routing structure</dim>");
+  });
+
+  test("whitespace-only task: header-only notice", () => {
+    assert.deepEqual(
+      completionNoticeLines(
+        { id: "sub-4", role: "worker", outcome: "finished", task: "  " },
+        fg,
+        bold,
+      ).length,
+      1,
     );
   });
 });

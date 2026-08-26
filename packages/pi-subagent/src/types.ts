@@ -252,3 +252,19 @@ export interface CheckDetails {
  * reason, never the partial output (check is the result-fetcher).
  */
 export type CancelDetails = CheckDetails;
+
+/**
+ * Details for the background-run completion notice (custom message
+ * `subagent-completion`). The renderer lays these out as a structured notice
+ * card; the message's plain `content` string stays as the non-TUI fallback
+ * (export, print mode) and for sessions persisted before this shape existed
+ * (task absent there).
+ */
+export interface CompletionNoticeDetails {
+  /** Registry id (sub-N). */
+  id: string;
+  role: string;
+  outcome: "finished" | "failed" | "cancelled";
+  /** Full task text; the renderer flattens and truncates it. */
+  task?: string;
+}

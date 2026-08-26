@@ -9,6 +9,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type {
   ActivityEntry,
+  CompletionNoticeDetails,
   FallbackFrom,
   RunState,
   SubagentDetails,
@@ -334,6 +335,40 @@ export function contentText(result: { content: Array<{ type: string; text?: stri
 export function taskPreview(task: string): string {
   const firstLine = task.split("\n")[0];
   return firstLine.length > 70 ? `${firstLine.slice(0, 70)}...` : firstLine;
+}
+
+/**
+ * Lines of the background-run completion notice. Bracket label + id/role +
+ * outcome on the header line, the bare task preview beneath (dim). Pure
+ * notification: the result itself never appears here — it surfaces through
+ * subagent_check (model) or /subagent:status (user). The renderer truncates
+ * each line to the terminal width independently, so the header never falls
+ * off the right edge.
+ *
+ * Visual family: the [compaction] system-notice card (bracket label, purple
+ * box), deliberately NOT the tool-row family — no tool-title prefix, no
+ * status icons. Signals "system event", not model behavior.
+ */
+export function completionNoticeLines(
+  details: CompletionNoticeDetails,
+  fg: (color: string, text: string) => string,
+  bold: (text: string) => string,
+): string[] {
+  // Intentional stops keep the plain text color; only real failures go red
+  // (cancelled keeps warning yellow, mirroring result-line semantics).
+  const outcomeColor =
+    details.outcome === "failed" ? "error" : details.outcome === "cancelled" ? "warning" : "customMessageText";
+  const header =
+    fg("customMessageLabel", bold("[subagent]")) +
+    ` ${fg("customMessageText", `${details.id} (${details.role})`)} ` +
+    fg(outcomeColor, details.outcome);
+
+  const lines = [header];
+  const task = oneLine(details.task ?? "").trim();
+  if (task) {
+    lines.push(fg("dim", task));
+  }
+  return lines;
 }
 
 /**

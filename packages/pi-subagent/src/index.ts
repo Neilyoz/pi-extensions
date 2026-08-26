@@ -53,6 +53,7 @@ import {
   renderCancelResult,
   renderCheckCall,
   renderCheckResult,
+  renderCompletionNotice,
   renderWaitCall,
   renderWaitResult,
 } from "./render-async.ts";
@@ -280,6 +281,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
     for (const run of liveRuns) run.abort("session shutdown");
   });
 
+  // The completion notice card — system-notice styling, not the tool-row
+  // family, so it never reads as model behavior.
+  pi.registerMessageRenderer(BACKGROUND_COMPLETION_MESSAGE_TYPE, renderCompletionNotice);
+
   pi.registerTool({
     name: "subagent_delegate",
     label: "Delegate to subagent",
@@ -384,19 +389,17 @@ export default function subagentExtension(pi: ExtensionAPI) {
             : result.stopReason === "cancelled"
               ? "cancelled"
               : "finished";
-          const detail =
-            outcome === "failed"
-              ? result.errorMessage || result.stderr
-              : outcome === "cancelled"
-                ? result.errorMessage
-                : result.summary;
-          const detailText = detail?.trim() ? ` — ${taskPreview(detail)}` : "";
+          // Pure notification: id + outcome only. The result itself surfaces
+          // through subagent_check (model) or /subagent:status (user) — the
+          // notice never previews it.
           pi.sendMessage(
             {
               customType: BACKGROUND_COMPLETION_MESSAGE_TYPE,
-              content: `Background subagent ${run.id} (${run.role}) ${outcome}: "${taskPreview(run.task)}"${detailText}`,
+              content: `Background subagent ${run.id} (${run.role}) ${outcome}: "${taskPreview(run.task)}"`,
               display: true,
-              details: { id: run.id, role: run.role, outcome },
+              // Structured payload for the notice renderer; the content string
+              // stays as the non-TUI fallback (export, print mode).
+              details: { id: run.id, role: run.role, outcome, task: run.task },
             },
             { triggerTurn: false },
           );

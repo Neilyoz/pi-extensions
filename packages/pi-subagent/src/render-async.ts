@@ -1,6 +1,7 @@
 /**
  * TUI rendering for background delegation: the background delegate input
- * block, the wait live view, and the check snapshot view.
+ * block, the wait live view, the check snapshot view, and the completion
+ * notice card.
  *
  * This module is deliberately independent of ./render.ts (the foreground
  * delegate family): the two presentation shapes evolve separately and share
@@ -20,12 +21,17 @@
  * line takes over the icon — never both.
  */
 
-import { getMarkdownTheme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import {
+  getMarkdownTheme,
+  type MessageRenderer,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type {
   BackgroundDelegateDetails,
   CancelDetails,
   CheckDetails,
+  CompletionNoticeDetails,
   RunViewEntry,
   SubagentResult,
   WaitDetails,
@@ -35,6 +41,7 @@ import {
   cancelStopSummary,
   clearElapsedTimer,
   collapsedText,
+  completionNoticeLines,
   contentText,
   deriveRunState,
   ensureElapsedTimer,
@@ -223,6 +230,53 @@ function checkEntryExpandedContainer(r: SubagentResult, fg: Fg): Container {
   }
   return container;
 }
+
+// ── completion notice: system-notice card, not the tool-row family ──
+
+/**
+ * Renderer for the `subagent-completion` custom message — the background-run
+ * completion notice. Same visual language as pi's [compaction] card
+ * (bracket label + purple box) and deliberately unlike the tool rows above:
+ * no tool-title prefix, no status icons, no usage lines. The bracket label
+ * is the "this is a system event, not model behavior" signal.
+ *
+ * Collapsed: header row + bare task preview beneath, each line truncated
+ * to the box interior width with "…" — the header can never fall off the
+ * right edge. Expanded (ctrl+o): the same lines untruncated, wrapped by Text.
+ */
+export const renderCompletionNotice: MessageRenderer<CompletionNoticeDetails> = (
+  message,
+  { expanded },
+  theme,
+) => {
+  const fg = theme.fg.bind(theme) as Fg;
+  const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+
+  const details = message.details;
+  if (!details) {
+    // Sessions persisted before structured details: fall back to the plain
+    // content string that was sent alongside them.
+    const text =
+      typeof message.content === "string"
+        ? message.content
+        : (message.content ?? [])
+            .filter((c) => c.type === "text")
+            .map((c) => c.text)
+            .join("\n");
+    box.addChild(new Text(fg("customMessageText", text), 0, 0));
+    return box;
+  }
+
+  const lines = completionNoticeLines(details, fg, theme.bold.bind(theme));
+  if (expanded) {
+    for (const line of lines) box.addChild(new Text(line, 0, 0));
+  } else {
+    // Per-line width-aware truncation inside the box (Box hands children the
+    // interior width; collapsedText never lets a line wrap).
+    box.addChild(collapsedText(lines.join("\n")));
+  }
+  return box;
+};
 
 // ── Background delegate: static input block ────────────────────
 
