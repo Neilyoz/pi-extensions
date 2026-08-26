@@ -28,7 +28,7 @@
  *   unscrollable.) Collapses to one status row.
  */
 
-import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
   Text,
@@ -1272,6 +1272,98 @@ class AskUserResultView implements Component {
 // Extension entry
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Dialog-based degradation for non-TUI sessions (RPC / ACP hosts).
+ *
+ * Feature mapping vs the TUI panel:
+ *   - single-select  → ctx.ui.select(), labels with inline one-line descriptions
+ *   - "Type something." → trailing "✎" option that opens ctx.ui.input();
+ *     cancelling the input returns to the option list
+ *   - allowSkip      → trailing "→ Skip" option (same default-true semantics)
+ *   - multiSelect    → one confirm() per option (full multi semantics, just verbose)
+ *   - message note   → only probed after a successful free-text input proves
+ *     the host answers input() dialogs (ACP adapters like rivet-dev/pi-acp
+ *     auto-cancel them; polling would spam the transcript)
+ *
+ * Lost versus the panel: previews/description layout (folded into labels),
+ * mid-multi-select dismissal (confirm-false means "no", not "cancel"), and
+ * the note when the host never answered a text input.
+ */
+const DIALOG_OTHER = "✎ Type something…";
+const DIALOG_SKIP = "→ Skip this question";
+
+function oneLine(text: string): string {
+  return text.replace(/\s*\n\s*/g, " ").trim();
+}
+
+async function dialogAsk(questions: Question[], ctx: { ui: ExtensionUIContext }): Promise<AskUserResult> {
+  const answers: Answer[] = [];
+  let cancelled = false;
+  let inputWorks = false;
+
+  outer: for (const question of questions) {
+    const title = question.prompt ? `${question.header}: ${oneLine(question.prompt)}` : question.header;
+    const skippable = canSkip(question);
+
+    if (!isMulti(question)) {
+      // Single-select: option labels (+ inline descriptions), then Skip / Other.
+      const displays = question.options.map((o) =>
+        o.description ? `${o.label} — ${oneLine(o.description)}` : o.label,
+      );
+      const options = [...displays];
+      if (skippable) options.push(DIALOG_SKIP);
+      options.push(DIALOG_OTHER);
+
+      while (true) {
+        const picked = await ctx.ui.select(title, options);
+        if (picked === undefined) {
+          cancelled = true;
+          break outer;
+        }
+        if (picked === DIALOG_SKIP) {
+          answers.push({ id: question.id, tab: question.tab, kind: "skipped" });
+          continue outer;
+        }
+        if (picked === DIALOG_OTHER) {
+          const text = await ctx.ui.input(question.header, "Type your answer…");
+          if (text !== undefined && text.trim()) {
+            inputWorks = true;
+            answers.push({ id: question.id, tab: question.tab, kind: "custom", text: text.trim() });
+            continue outer;
+          }
+          continue; // dismissed/unsupported input — back to the option list
+        }
+        const index = displays.indexOf(picked);
+        if (index === -1) continue; // unknown value — re-show the menu
+        answers.push({ id: question.id, tab: question.tab, kind: "single", option: question.options[index].label });
+        continue outer;
+      }
+    }
+
+    // Multi-select: inclusion confirm() per option preserves full multi
+    // semantics. confirm-false is indistinguishable from dismissal, so an
+    // all-no run commits as an empty selection ({answers: []}) — same shape
+    // as the panel's empty commit.
+    const pickedLabels: string[] = [];
+    for (const option of question.options) {
+      const yes = await ctx.ui.confirm(
+        `${question.header} — include "${option.label}"?`,
+        option.description ?? question.prompt ?? "",
+      );
+      if (yes) pickedLabels.push(option.label);
+    }
+    answers.push({ id: question.id, tab: question.tab, kind: "multi", options: pickedLabels });
+  }
+
+  const result: AskUserResult = { questions, answers, cancelled };
+  if (!cancelled && inputWorks) {
+    // Host has proven it answers text inputs — safe to probe for the note.
+    const note = await ctx.ui.input("Note for the agent (optional)", "anything to add along with your answers…");
+    if (note?.trim()) result.message = note.trim();
+  }
+  return result;
+}
+
 export default function askUserExtension(pi: ExtensionAPI) {
   pi.registerTool<typeof AskUserParams, AskUserResult>({
     name: "ask_user",
@@ -1281,16 +1373,6 @@ export default function askUserExtension(pi: ExtensionAPI) {
     parameters: AskUserParams,
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      // `ctx.mode`, not `ctx.hasUI`: RPC mode binds a stub uiContext (hasUI is
-      // true there) but ctx.ui.custom() silently returns undefined — panels
-      // are TUI-only. Headless hosts of this session (pi-subagent children,
-      // scripted pi runs) must fail fast with an actionable message so the
-      // model proceeds autonomously instead of parsing a TypeError.
-      if (ctx.mode !== "tui") {
-        return errorResult(
-          "Error: ask_user is not available in this session mode — interactive panels require a TUI session. Proceed autonomously without user input.",
-        );
-      }
       if (params.questions.length === 0) {
         return errorResult("Error: No questions provided");
       }
@@ -1319,22 +1401,31 @@ export default function askUserExtension(pi: ExtensionAPI) {
       // without a reload.
       const cfg = loadConfig(ctx.cwd);
 
-      const result = await ctx.ui.custom<AskUserResult>(
-        (tui, theme, _kb, done) => {
-          return new AskUserPanel(questions, tui, theme, {
-            onResult: (r) => done(r),
-          }, cfg.toggleKey);
-        },
-        {
-          // overlay:false renders the panel into pi's bottom editorContainer slot
-          // (the same path ctx.ui.select()/input() take) instead of compositing a
-          // screen overlay over everything. The chat transcript stays visible above
-          // the panel and is scrollable via the terminal's native scrollback. See
-          // "Layout" note at the top of this file for why overlay:true breaks
-          // transcript scrolling.
-          overlay: false,
-        },
-      );
+      // Dual-track UI: TUI sessions get the full custom panel; RPC/ACP hosts
+      // get dialog-based degradation via pi's extension_ui_request sub-protocol
+      // (`ctx.mode`, not `ctx.hasUI` — hasUI is true in rpc mode but
+      // ctx.ui.custom() silently returns undefined there). print/json have no
+      // host either way: every dialog resolves cancelled and the payload comes
+      // back `{cancelled: true}`, which the LLM contract already covers.
+      const result =
+        ctx.mode === "tui"
+          ? await ctx.ui.custom<AskUserResult>(
+              (tui, theme, _kb, done) => {
+                return new AskUserPanel(questions, tui, theme, {
+                  onResult: (r) => done(r),
+                }, cfg.toggleKey);
+              },
+              {
+                // overlay:false renders the panel into pi's bottom editorContainer slot
+                // (the same path ctx.ui.select()/input() take) instead of compositing a
+                // screen overlay over everything. The chat transcript stays visible above
+                // the panel and is scrollable via the terminal's native scrollback. See
+                // "Layout" note at the top of this file for why overlay:true breaks
+                // transcript scrolling.
+                overlay: false,
+              },
+            )
+          : await dialogAsk(questions, ctx);
 
       // ── Build the JSON payload returned to the LLM ──
       //

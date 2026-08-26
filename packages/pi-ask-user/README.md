@@ -106,3 +106,16 @@ After the last question, a **review screen** lists every question with your answ
 | `→` / `←` | Next / previous question, but **stop at the boundary** (no cycle) — safer when there are many questions |
 | `Esc` | Cancel (or exit the custom-input editor without saving) |
 | `Ctrl+\` | Collapse / expand the panel (configurable — see [Configuration](#configuration)) |
+
+## Non-TUI sessions (RPC / ACP)
+
+The panel is built on pi's TUI-only `ctx.ui.custom()` API. In RPC/ACP sessions (e.g. via `pi-acp` in Zed) the tool degrades to plain dialogs through pi's extension UI sub-protocol, and the JSON result contract stays identical:
+
+- **Single-select** → one `select()` dialog per question; descriptions fold inline into option labels; a trailing "✎ Type something…" option opens a text input (dismissing it returns to the menu); a trailing skip option appears unless the question sets `allowSkip: false`
+- **Multi-select** → one confirm dialog per option (full multi semantics, just more clicks); an all-no run commits as `{answers: []}`, same as the panel's empty commit
+- **Cancelling any select()** cancels the whole call (`{cancelled: true}`), same as Esc in the panel
+- **The note** is only offered after a free-text input has succeeded at least once in the call — hosts that don't answer text inputs (e.g. current `pi-acp` auto-cancels them) never get polled, so no unsupported-request spam
+
+Lost versus the TUI panel: the review screen (degraded mode asks questions strictly in sequence), option previews/description layout, mid-multi-select dismissal (confirm-no means "exclude", not "cancel"), and the note when the host can't do text inputs. In print/JSON mode no host answers dialogs at all, so every call resolves to `{cancelled: true}`.
+
+Why this floor: ACP's only agent→client interaction primitive is `session/request_permission`, whose options carry free-form names/ids — so any multiple-choice question maps natively onto `select()`, but free-form text input has no protocol carrier at all (not an adapter gap). The tool therefore promises exactly the select/confirm intersection and treats `input()` as a progressive enhancement.

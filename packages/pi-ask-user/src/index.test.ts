@@ -125,3 +125,142 @@ test("ask_user honors a custom toggle key from settings", async () => {
     else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
   }
 });
+
+// ── Non-TUI (RPC/ACP) dialog degradation ──────────────────────────────────
+
+interface DialogCalls {
+  selects: Array<{ title: string; options: string[] }>;
+  inputs: string[];
+  confirms: Array<{ title: string; message: string }>;
+}
+
+/**
+ * Drive the tool in rpc mode with a scripted dialog host. `answers` is a queue:
+ * each select() call shifts one value (undefined = cancelled); each input()
+ * call shifts one value; each confirm() call shifts one boolean.
+ */
+async function executeRpc(
+  questions: Array<Record<string, unknown>>,
+  script: { select?: (string | undefined)[]; input?: (string | undefined)[]; confirm?: boolean[] },
+): Promise<{ payload: any; calls: DialogCalls }> {
+  let tool: any;
+  askUserExtension({
+    registerTool(definition: unknown) {
+      tool = definition;
+    },
+  } as any);
+
+  const calls: DialogCalls = { selects: [], inputs: [], confirms: [] };
+  const selectQueue = [...(script.select ?? [])];
+  const inputQueue = [...(script.input ?? [])];
+  const confirmQueue = [...(script.confirm ?? [])];
+
+  const result = await tool.execute(
+    "test-call",
+    { questions },
+    new AbortController().signal,
+    () => {},
+    {
+      mode: "rpc",
+      hasUI: true,
+      ui: {
+        custom: async () => undefined,
+        select: async (_title: string, options: string[]) => {
+          calls.selects.push({ title: _title, options });
+          return selectQueue.shift();
+        },
+        input: async (title: string, _placeholder?: string) => {
+          calls.inputs.push(title);
+          return inputQueue.shift();
+        },
+        confirm: async (title: string, message: string) => {
+          calls.confirms.push({ title, message });
+          return confirmQueue.shift();
+        },
+      },
+    },
+  );
+  return { payload: JSON.parse(result.content[0].text), calls };
+}
+
+test("rpc: single-select answered via select() keeps the payload contract", async () => {
+  const { payload, calls } = await executeRpc(
+    [{ tab: "pick", header: "Which?", prompt: "choose one", options: [
+      { label: "one", description: "first option" },
+      { label: "two" },
+    ] }],
+    { select: ["two"] },
+  );
+
+  // Description folds into the option display but the answer echoes the label.
+  assert.deepEqual(payload, { cancelled: false, answers: [{ tab: "pick", answer: "two" }] });
+  assert.equal(calls.selects.length, 1);
+  assert.ok(calls.selects[0].title.includes("Which?"));
+  assert.ok(calls.selects[0].title.includes("choose one"));
+  assert.deepEqual(calls.selects[0].options.slice(0, 2), ["one — first option", "two"]);
+});
+
+test("rpc: skip and custom-text options are offered and map to skipped/custom kinds", async () => {
+  const { payload } = await executeRpc(
+    [{ tab: "a", header: "Q1", options: [{ label: "one" }] }, { tab: "b", header: "Q2", allowSkip: false, options: [{ label: "red" }] }],
+    { select: ["→ Skip this question", "✎ Type something…"], input: ["my own words"] },
+  );
+
+  assert.deepEqual(payload.answers, [
+    { tab: "a", skipped: true },
+    { tab: "b", custom: "my own words" },
+  ]);
+});
+
+test("rpc: cancelling a select cancels the whole call like Esc in the panel", async () => {
+  const { payload } = await executeRpc(
+    [{ tab: "x", header: "Q", options: [{ label: "one" }] }],
+    { select: [undefined] },
+  );
+
+  assert.deepEqual(payload, { cancelled: true, answers: [] });
+});
+
+test("rpc: dismissed free-text input returns to the option menu, not an error", async () => {
+  const { payload, calls } = await executeRpc(
+    [{ tab: "x", header: "Q", options: [{ label: "one" }] }],
+    { select: ["✎ Type something…", "one"], input: [undefined] },
+  );
+
+  assert.deepEqual(payload, { cancelled: false, answers: [{ tab: "x", answer: "one" }] });
+  assert.equal(calls.selects.length, 2);
+});
+
+test("rpc: multiSelect degrades to inclusion confirms; all-no commits empty answers", async () => {
+  const { payload, calls } = await executeRpc(
+    [{ tab: "m", header: "Features", multiSelect: true, prompt: "which ones", options: [
+      { label: "alpha", description: "the alpha" },
+      { label: "beta" },
+    ] }],
+    { confirm: [true, false] },
+  );
+
+  assert.deepEqual(payload.answers, [{ tab: "m", answers: ["alpha"] }]);
+  assert.equal(calls.confirms.length, 2);
+  assert.ok(calls.confirms[0].title.includes('include "alpha"?'));
+  assert.equal(calls.confirms[0].message, "the alpha");
+});
+
+test("rpc: note is probed only after the host proved it answers text inputs", async () => {
+  // Host proves input() works by answering a "Type something…" flow first;
+  // the note probe then fires once at review time.
+  const withInput = await executeRpc(
+    [{ tab: "x", header: "Q", options: [{ label: "one" }] }],
+    { select: ["✎ Type something…"], input: ["typed answer", "a helpful note"] },
+  );
+  assert.deepEqual(withInput.payload.answers, [{ tab: "x", custom: "typed answer" }]);
+  assert.equal(withInput.payload.message, "a helpful note");
+
+  // No successful text input → no extra unsupported-input poll.
+  const withoutInput = await executeRpc(
+    [{ tab: "x", header: "Q", options: [{ label: "one" }] }],
+    { select: ["one"] },
+  );
+  assert.equal(withoutInput.payload.message, undefined);
+  assert.equal(withoutInput.calls.inputs.length, 0);
+});
