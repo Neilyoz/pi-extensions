@@ -93,6 +93,12 @@ function printableChar(data: string): string | undefined {
   return data.length === 1 && data >= " " && data <= "~" ? data : undefined;
 }
 
+/** Center a string within `width` visible columns (pad-right handles the tail). */
+function centerText(s: string, width: number): string {
+  const pad = Math.max(0, Math.floor((width - visibleWidth(s)) / 2));
+  return " ".repeat(pad) + s;
+}
+
 /** Elide oversized brief text to head + tail around an elision marker. */
 function capBriefText(text: string): string {
   if (text.length <= BRIEF_TEXT_CAP) return text;
@@ -445,7 +451,27 @@ export class SubagentViewPanel implements Component, Focusable {
         ),
       );
     } else {
-      lines.push(row(fg("muted", "subagents: no runs.")));
+      // Empty registry — every run left the view (a run disappears once its
+      // result is in the conversation). Give the state real presence — a
+      // full-size panel with a centered message and the close hint — and
+      // fold steer mode back to browse so Esc closes immediately.
+      if (this.mode === "steer") {
+        this.editor.setText("");
+        this.mode = "browse";
+      }
+      lines.push(row(""));
+      lines.push(row(fg("muted", centerText("no subagent runs", innerW))));
+      lines.push(
+        row(
+          fg(
+            "dim",
+            centerText("a run leaves the view once its result is in the conversation", innerW),
+          ),
+        ),
+      );
+      lines.push(row(""));
+      lines.push(row(""));
+      lines.push(row(fg("dim", "Esc close")));
     }
 
     // ── Focused run: header line, then the current page. ──
