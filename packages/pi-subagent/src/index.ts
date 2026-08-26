@@ -146,6 +146,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
       "- Delegate ONLY when a task involves significant work (heavy analysis, multi-step investigation, large-scope changes) AND you only care about the conclusion, not intermediate steps. A good test: the task would clutter your context with 3+ turns of raw tool output.",
       "- DO NOT delegate simple tasks — a single read, a one-line edit, a basic grep, or straightforward changes touching 1-2 files. Just do them yourself; spawning a child process costs more than the task.",
       "",
+      "SELF-CONTAINED DELEGATION (subagents have NO memory of this conversation):",
+      "",
+      "- The child sees exactly three things: task, context, files — nothing else of this chat exists for it. Any requirement, decision, or constraint it must know has to be restated in those channels.",
+      "- Never write phantom references (\"as discussed above\", \"per the requirements\") — the child has never seen that material. Inline the actual content instead.",
+      "- The isolation is deliberate: don't dump your whole conversation either. Pass what the task needs and nothing more, so the child's judgment isn't steered by irrelevant history.",
+      "",
       "AVAILABLE ROLES:",
       ...entries.map(([name, role]) => `  - ${name}: ${role.description}`),
       "",
@@ -297,7 +303,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       role: Type.String({ description: "Subagent role to use" }),
       task: Type.String({
         description:
-          "The work to do. Instructions only — background material belongs in `context`, reference file paths in `files`.",
+          "The work to do — self-contained: the subagent cannot see this conversation, so restate any requirement or constraint it needs here or in `context`. Instructions only — background material belongs in `context`, reference file paths in `files`.",
       }),
       context: Type.Optional(
         Type.String({

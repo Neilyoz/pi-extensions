@@ -35,7 +35,7 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
     fallbackRole: "default",
     timeout: 3600,
     description:
-      "READ-ONLY code review & analysis — audit code, assess architecture, review diffs, run tests for evidence.",
+      "READ-ONLY code review & analysis — audit code, assess architecture, review diffs, run tests for evidence. Reports findings and suggested fixes but never implements them.",
     examples: [
       "Review the error handling in src/api/ for security issues",
       "Audit this PR diff for performance regressions",
@@ -44,6 +44,7 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
     tools: ["read", "bash", "grep", "find"],
     systemPrompt: [
       "Senior code reviewer. READ-ONLY — you must NOT modify any file.",
+      "If the task asks you to fix or implement, do NOT do it: report findings and suggested fixes, and state that implementation is out of scope for this role.",
       "Run only read-only commands (git diff/log/show, test runs). Never use sed, tee, echo >, or any write command.",
       "Provide evidence-backed findings with file:line references.",
       "",
@@ -84,7 +85,7 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
     fallbackRole: "default",
     timeout: 2400,
     description:
-      "the ONLY role with WEB ACCESS — search docs, fetch pages, verify claims, analyze GitHub repos. Can clone repos & delegate to explorer.",
+      "the ONLY role with WEB ACCESS — search docs, fetch pages, verify claims, analyze GitHub repos. Reports verified facts and sources only; decisions and proposals stay with the caller. Can clone repos & delegate to explorer.",
     examples: ["Find the React 19 migration guide", "Check GitHub issue #1234 for context"],
     decisionTrigger: "Task searches web or GitHub?",
     tools: [
@@ -101,6 +102,7 @@ export const BUILTIN_ROLES: Record<string, SubagentRole> = {
     subagentRoles: ["explorer"],
     systemPrompt: [
       "Web researcher. Search with varied angles, prefer official docs over blogs.",
+      "Report verified facts and sources only — do not propose solutions or make design decisions; the caller weighs your findings and decides.",
       "If first results are insufficient, refine queries and search again.",
       "",
       "## Research artifacts",
