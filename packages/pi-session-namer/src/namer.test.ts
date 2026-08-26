@@ -61,6 +61,27 @@ test("session namer strips nested XML wrapper tags", async () => {
   );
 });
 
+test("session namer puts the naming instruction in the user turn", async () => {
+  let captured = "";
+  const rolesApi = {
+    async completeWithRole(_role: string, params: { messages: { content: string }[] }) {
+      captured = params.messages[0].content;
+      return { content: [{ type: "text", text: "Title" }] };
+    },
+  };
+  const config: SessionNamerConfig = { enabled: true, sideAgentRole: "utility", maxLength: 50 };
+  await generateSessionName(rolesApi as any, "utility", config, { user: "Name this session" });
+
+  // The direct instruction must precede the tagged exchange, so weak models
+  // read the tags as data instead of a request to answer.
+  const tagIdx = captured.indexOf("<user_message>");
+  assert.ok(tagIdx > 0, "instruction should precede the tagged exchange");
+  const head = captured.slice(0, tagIdx).toLowerCase();
+  assert.ok(head.includes("name the coding session"));
+  assert.ok(head.includes("max 50 characters"));
+  assert.ok(head.includes("not a request to fulfill"));
+});
+
 test("session namer keeps wrapper tags closed when truncating long replies", async () => {
   let captured = "";
   const rolesApi = {
