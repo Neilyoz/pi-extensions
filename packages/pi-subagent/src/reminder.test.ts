@@ -5,9 +5,10 @@
  *   node --test packages/pi-subagent/src/reminder.test.ts
  *
  * Coverage: row formatting per state (queued/running/finished/failed/budget),
- * byte-stability between calls (the cache-prefix contract), empty-inbox
- * no-op, and cache-stable head injection (string content, block content,
- * non-user first message, empty transcript).
+ * delivery-derived row removal (terminal rows checked on the active branch
+ * drop out; live rows never do), byte-stability between calls (the
+ * cache-prefix contract), empty-inbox no-op, and cache-stable head injection
+ * (string content, block content, non-user first message, empty transcript).
  */
 
 import { test, describe } from "node:test";
@@ -40,19 +41,22 @@ function entry(partial: Partial<InboxEntry> & Pick<InboxEntry, "id" | "state">):
 
 describe("buildInboxReminder", () => {
   test("empty inbox returns undefined (zero injection)", () => {
-    assert.equal(buildInboxReminder([]), undefined);
+    assert.equal(buildInboxReminder([], new Set()), undefined);
   });
 
   test("queued and running rows carry no time-derived detail", () => {
-    const text = buildInboxReminder([
-      entry({ id: "sub-3", state: "queued", snapshot: frame({ exitCode: -1, queued: true }) }),
-      entry({
-        id: "sub-2",
-        state: "running",
-        // Live frame: startTime present — a naive formatter would derive elapsed from it.
-        snapshot: frame({ exitCode: -1, startTime: Date.now() - 60_000 }),
-      }),
-    ])!;
+    const text = buildInboxReminder(
+      [
+        entry({ id: "sub-3", state: "queued", snapshot: frame({ exitCode: -1, queued: true }) }),
+        entry({
+          id: "sub-2",
+          state: "running",
+          // Live frame: startTime present — a naive formatter would derive elapsed from it.
+          snapshot: frame({ exitCode: -1, startTime: Date.now() - 60_000 }),
+        }),
+      ],
+      new Set(),
+    )!;
     assert.match(text, /\n- sub-3 \(worker\) — queued — "Investigate flaky tests/);
     assert.match(text, /\n- sub-2 \(worker\) — running — "Investigate flaky tests/);
     // No seconds anywhere on live rows — byte-stability contract.
@@ -60,56 +64,68 @@ describe("buildInboxReminder", () => {
   });
 
   test("finished row freezes duration from elapsedMs", () => {
-    const text = buildInboxReminder([
-      entry({
-        id: "sub-1",
-        state: "finished",
-        snapshot: frame({ exitCode: 0, elapsedMs: 192_000 }),
-      }),
-    ])!;
+    const text = buildInboxReminder(
+      [
+        entry({
+          id: "sub-1",
+          state: "finished",
+          snapshot: frame({ exitCode: 0, elapsedMs: 192_000 }),
+        }),
+      ],
+      new Set(),
+    )!;
     assert.match(text, /\n- sub-1 \(worker\) — finished \(ran 3m12s\) — "Investigate flaky tests/);
   });
 
   test("budget-stopped finished row is flagged partial", () => {
-    const text = buildInboxReminder([
-      entry({
-        id: "sub-1",
-        state: "finished",
-        snapshot: frame({ exitCode: 0, elapsedMs: 300_000, stopReason: "budget_exceeded" }),
-      }),
-    ])!;
+    const text = buildInboxReminder(
+      [
+        entry({
+          id: "sub-1",
+          state: "finished",
+          snapshot: frame({ exitCode: 0, elapsedMs: 300_000, stopReason: "budget_exceeded" }),
+        }),
+      ],
+      new Set(),
+    )!;
     assert.match(text, /— finished, partial — budget exceeded \(ran 5m\) —/);
   });
 
   test("failed row carries the error preview, first line only", () => {
-    const text = buildInboxReminder([
-      entry({
-        id: "sub-4",
-        state: "failed",
-        snapshot: frame({
-          exitCode: 1,
-          elapsedMs: 5_000,
-          errorMessage: "provider timeout\nretry hint: check quota",
+    const text = buildInboxReminder(
+      [
+        entry({
+          id: "sub-4",
+          state: "failed",
+          snapshot: frame({
+            exitCode: 1,
+            elapsedMs: 5_000,
+            errorMessage: "provider timeout\nretry hint: check quota",
+          }),
         }),
-      }),
-    ])!;
+      ],
+      new Set(),
+    )!;
     assert.match(text, /— failed — provider timeout \(ran 5s\) —/);
     assert.doesNotMatch(text, /retry hint/);
   });
 
   test("cancelled row carries the cancel label, not failed", () => {
-    const text = buildInboxReminder([
-      entry({
-        id: "sub-5",
-        state: "failed",
-        snapshot: frame({
-          exitCode: 1,
-          stopReason: "cancelled",
-          elapsedMs: 7_000,
-          errorMessage: "user: wrong direction after review",
+    const text = buildInboxReminder(
+      [
+        entry({
+          id: "sub-5",
+          state: "failed",
+          snapshot: frame({
+            exitCode: 1,
+            stopReason: "cancelled",
+            elapsedMs: 7_000,
+            errorMessage: "user: wrong direction after review",
+          }),
         }),
-      }),
-    ])!;
+      ],
+      new Set(),
+    )!;
     assert.match(text, /— cancelled — user: wrong direction after review \(ran 7s\) —/);
   });
 
@@ -118,19 +134,52 @@ describe("buildInboxReminder", () => {
       entry({ id: "sub-1", state: "finished", snapshot: frame({ exitCode: 0, elapsedMs: 42_000 }) }),
       entry({ id: "sub-2", state: "running", snapshot: frame({ exitCode: -1, startTime: 123 }) }),
     ];
-    assert.equal(buildInboxReminder(entries), buildInboxReminder(entries));
+    assert.equal(buildInboxReminder(entries, new Set()), buildInboxReminder(entries, new Set()));
   });
 
   test("long task text is truncated to the shared 70-char preview cap", () => {
     const long = "x".repeat(120);
-    const text = buildInboxReminder([entry({ id: "sub-9", state: "running", task: long })])!;
+    const text = buildInboxReminder([entry({ id: "sub-9", state: "running", task: long })], new Set())!;
     assert.ok(text.includes(`"${"x".repeat(70)}..."`));
   });
 
   test("header explains pull-only collection semantics", () => {
-    const text = buildInboxReminder([entry({ id: "sub-1", state: "running" })])!;
+    const text = buildInboxReminder([entry({ id: "sub-1", state: "running" })], new Set())!;
     assert.match(text, /^\[background subagent runs — results are pull-only for the model/);
-    assert.match(text, /already collected\]/);
+    assert.match(text, /already checked on this branch\]/);
+  });
+
+  test("terminal rows in the delivered set drop out of the inbox", () => {
+    const text = buildInboxReminder(
+      [
+        entry({ id: "sub-1", state: "finished", snapshot: frame({ exitCode: 0, elapsedMs: 42_000 }) }),
+        entry({ id: "sub-2", state: "failed", snapshot: frame({ exitCode: 1, elapsedMs: 5_000 }) }),
+      ],
+      new Set(["sub-1"]),
+    )!;
+    assert.doesNotMatch(text, /sub-1/);
+    assert.match(text, /sub-2 \(worker\) — failed/);
+  });
+
+  test("live rows stay listed even when their id is in the delivered set", () => {
+    // A live frame checked mid-run does not count as delivery — the result
+    // was not final yet, so the run keeps nagging until a terminal check.
+    const text = buildInboxReminder(
+      [
+        entry({ id: "sub-1", state: "queued", snapshot: frame({ exitCode: -1, queued: true }) }),
+        entry({ id: "sub-2", state: "running", snapshot: frame({ exitCode: -1, startTime: 99 }) }),
+      ],
+      new Set(["sub-1", "sub-2"]),
+    )!;
+    assert.match(text, /sub-1 \(worker\) — queued/);
+    assert.match(text, /sub-2 \(worker\) — running/);
+  });
+
+  test("all terminal rows delivered returns undefined (zero injection)", () => {
+    const entries = [
+      entry({ id: "sub-1", state: "finished", snapshot: frame({ exitCode: 0, elapsedMs: 42_000 }) }),
+    ];
+    assert.equal(buildInboxReminder(entries, new Set(["sub-1"])), undefined);
   });
 });
 

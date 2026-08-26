@@ -17,7 +17,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
 import type {
-  CollectedRun,
   SubagentConfig,
   SubagentResult,
   SubagentRole,
@@ -28,6 +27,7 @@ import { BUILTIN_ROLES } from "./roles.ts";
 import { getPiInvocation } from "./spawn.ts";
 import {
   AsyncSemaphore,
+  collectDeliveredIds,
   createThrottler,
   describeCurrentActivity,
   formatBudgetNote,
@@ -103,14 +103,15 @@ export default function subagentExtension(pi: ExtensionAPI) {
   refreshAvailableRoles();
 
   // ── Background run registry ────────────────────────────────────
-  // Process-lifetime map of unclaimed background runs (queued, running, and
+  // Process-lifetime map of background runs (queued, running, and
   // finished/failed alike). Foreground delegate runs are NOT registered —
-  // their lifecycle is the tool call itself. subagent_check on a terminal run
-  // collects it: the handle is freed and a lightweight CollectedRun tombstone
-  // takes its place, so ids stay resolvable while memory does not grow with
-  // full results.
+  // their lifecycle is the tool call itself. Runs stay registered for the
+  // whole session: subagent_check is idempotent and re-delivers the terminal
+  // snapshot on every call, so branch navigation or compaction can never
+  // strand a result outside the model's reach. Whether a run still needs
+  // reminding is NOT tracked here — it derives from the session tree (see
+  // collectDeliveredIds + the context handler), the single source of truth.
   const backgroundRuns = new Map<string, RunHandle>();
-  const collectedRuns = new Map<string, CollectedRun>();
   let runCounter = 0;
   let sessionGeneration = 0;
 
@@ -252,7 +253,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     rebuildGuidelines(availableRoles);
   });
 
-  pi.on("context", async (event) => {
+  pi.on("context", async (event, ctx) => {
     // Completion notices are persisted custom messages so the user can see
     // them in the transcript, but they are deliberately UI-only. Keep the
     // model on the reminder/check path instead of duplicating the notice in
@@ -262,10 +263,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
         message.role !== "custom" || message.customType !== BACKGROUND_COMPLETION_MESSAGE_TYPE,
     );
 
-    // The model's inbox: every unclaimed background run, injected at a
-    // cache-stable head position before every provider call. Empty inbox and
-    // no filtered notices → context stays untouched, cache fully stable.
-    const reminder = buildInboxReminder(backgroundRuns.values());
+    // The model's inbox: every background run not yet checked on the active
+    // branch, injected at a cache-stable head position before every provider
+    // call. Delivery state is derived from the session tree (append-only:
+    // branching away drops the check entry, branching back restores it), so
+    // the inbox re-arms itself after tree navigation. Empty inbox and no
+    // filtered notices → context stays untouched, cache fully stable.
+    const reminder = buildInboxReminder(
+      backgroundRuns.values(),
+      collectDeliveredIds(ctx.sessionManager.buildContextEntries()),
+    );
     if (!reminder && messages.length === event.messages.length) return;
     return { messages: reminder ? injectReminder(messages, reminder) : messages };
   });
@@ -388,9 +395,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
         backgroundRuns.set(run.id, run);
         const runGeneration = sessionGeneration;
         void run.promise.then((result) => {
-          // A collected run already has a visible check result. Do not emit a
-          // second notice, and never publish completions from an old session.
-          if (!backgroundRuns.has(run.id) || runGeneration !== sessionGeneration) return;
+          // Never publish completions from an old session. Within a session
+          // every completion emits its UI-only notice card once — check
+          // results never suppress it (they are not LLM-visible either way).
+          if (runGeneration !== sessionGeneration) return;
 
           const outcome = isFailedResult(result)
             ? "failed"
@@ -545,16 +553,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
       const unknown = ids.filter((id) => !backgroundRuns.has(id));
       if (unknown.length > 0) {
         const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
-        const collectedNotes = unknown
-          .filter((id) => collectedRuns.has(id))
-          .map((id) => `${id} was already collected (result is in your history)`);
-        const trulyUnknown = unknown.filter((id) => !collectedRuns.has(id));
-        const parts = [
-          `Unknown subagent id(s): ${trulyUnknown.length > 0 ? trulyUnknown.join(", ") : "(none)"}.`,
-          collectedNotes.length > 0 ? `${collectedNotes.join("; ")}.` : "",
-          `Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
-        ].filter(Boolean);
-        throw new Error(parts.join(" "));
+        throw new Error(
+          `Unknown subagent id(s): ${unknown.join(", ")}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
+        );
       }
       const runs = ids.map((id) => backgroundRuns.get(id)!);
       const timeoutMs =
@@ -661,7 +662,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_check",
     label: "Check a background subagent",
     description:
-      "Get an instant snapshot of ONE background subagent run: queued / running (with current activity) / finished (with the full output as the run result) / failed (with reason and partial output). Does not wait — use subagent_wait for that. Checking a terminal run collects it: the output is returned once and the run leaves the background registry. One id per call because results can be large.",
+      "Get an instant snapshot of ONE background subagent run: queued / running (with current activity) / finished (with the full output as the run result) / failed (with reason and partial output). Does not wait — use subagent_wait for that. Idempotent: checking a terminal run again re-delivers the same snapshot, so the result stays reachable even after branch navigation or compaction. One id per call because results can be large.",
     promptSnippet: "Inspect a background subagent run",
     parameters: Type.Object({
       id: Type.String({ description: "Run id returned by a background delegate call" }),
@@ -670,12 +671,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const run = backgroundRuns.get(params.id);
       if (!run) {
-        const collected = collectedRuns.get(params.id);
-        if (collected) {
-          throw new Error(
-            `${params.id} (${collected.role}) was already collected — its result is in your conversation history. Check the remaining runs or delegate new ones.`,
-          );
-        }
         const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
         throw new Error(
           `Unknown subagent id: ${params.id}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
@@ -684,19 +679,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
       // Freeze live frames so the snapshot's elapsed time stays static.
       const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
-
-      // Read-once collection: a terminal check returns the result AND frees
-      // the run — the output now lives in the conversation history, so the
-      // registry keeps only a lightweight tombstone for id resolution.
-      if (run.state === "finished" || run.state === "failed") {
-        backgroundRuns.delete(run.id);
-        collectedRuns.set(run.id, {
-          id: run.id,
-          role: run.role,
-          task: taskPreview(run.task),
-          state: run.state,
-        });
-      }
 
       return {
         content: [{ type: "text", text: formatCheckText(run.id, run.role, snap) }],
@@ -712,7 +694,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_steer",
     label: "Steer a running background subagent",
     description:
-      "Queue a mid-run correction into ONE running background subagent — typically right after subagent_check showed it heading down a wrong path. The message is delivered after the child finishes its current tool batch, before its next LLM call; the run keeps its progress (unlike cancel). Only running runs accept steering; queued runs reject it, and terminal runs are collected by check instead. Typical flow: check → steer → check again later.",
+      "Queue a mid-run correction into ONE running background subagent — typically right after subagent_check showed it heading down a wrong path. The message is delivered after the child finishes its current tool batch, before its next LLM call; the run keeps its progress (unlike cancel). Only running runs accept steering; queued runs reject it, and check is the tool for terminal runs. Typical flow: check → steer → check again later.",
     promptSnippet: "Send a mid-run correction to a background subagent",
     parameters: Type.Object({
       id: Type.String({ description: "Run id returned by a background delegate call" }),
@@ -725,12 +707,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       const run = backgroundRuns.get(params.id);
       if (!run) {
-        const collected = collectedRuns.get(params.id);
-        if (collected) {
-          throw new Error(
-            `${params.id} (${collected.role}) was already collected — nothing left to steer. Delegate a new run if a correction is still needed.`,
-          );
-        }
         const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
         throw new Error(
           `Unknown subagent id: ${params.id}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
@@ -766,7 +742,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_cancel",
     label: "Cancel a background subagent",
     description:
-      "Cancel ONE background subagent run (queued or running): the child process is killed and the run settles as cancelled (its own stop reason, same family as timeout — partial output kept), NOT as a plain failure. The reason is recorded with the run: whoever reads the partial output later via subagent_check sees why it was stopped. Cancelling does not collect — check still returns the partial output once. A finished/failed run cannot be cancelled; check it instead.",
+      "Cancel ONE background subagent run (queued or running): the child process is killed and the run settles as cancelled (its own stop reason, same family as timeout — partial output kept), NOT as a plain failure. The reason is recorded with the run: whoever reads the partial output later via subagent_check sees why it was stopped. Cancelling does not remove the run — check still returns the partial output. A finished/failed run cannot be cancelled; check it instead.",
     promptSnippet: "Cancel a background subagent run",
     parameters: Type.Object({
       id: Type.String({ description: "Run id returned by a background delegate call" }),
@@ -781,19 +757,13 @@ export default function subagentExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const run = backgroundRuns.get(params.id);
       if (!run) {
-        const collected = collectedRuns.get(params.id);
-        if (collected) {
-          throw new Error(
-            `${params.id} (${collected.role}) was already collected — its result is in your conversation history. There is nothing left to cancel.`,
-          );
-        }
         const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
         throw new Error(
           `Unknown subagent id: ${params.id}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
         );
       }
 
-      // Terminal runs cannot be cancelled — point at the collector instead.
+      // Terminal runs cannot be cancelled — point at check instead.
       if (run.state === "finished" || run.state === "failed") {
         const what = run.state === "finished" ? "its result" : "the failure reason and partial output";
         const text =
@@ -827,8 +797,8 @@ export default function subagentExtension(pi: ExtensionAPI) {
   pi.registerCommand("subagent:view", {
     description: "Open the live subagent activity view (watch progress, steer runs)",
     handler: async (_args, ctx) => {
-      // Union of every known run: background registry (until collected) plus
-      // live in-flight runs (foreground delegate calls included). Dedupe by id —
+      // Union of every known run: the background registry plus live
+      // in-flight runs (foreground delegate calls included). Dedupe by id —
       // background runs appear in both.
       const runsProvider = () => {
         const seen = new Set<string>();
@@ -947,40 +917,31 @@ export default function subagentExtension(pi: ExtensionAPI) {
   pi.registerCommand("subagent:status", {
     description: "List background subagent runs and their current state",
     handler: async (_args, ctx) => {
-      if (backgroundRuns.size === 0 && collectedRuns.size === 0) {
+      if (backgroundRuns.size === 0) {
         ctx.ui.notify("No background runs.", "info");
         return;
       }
       const lines: string[] = [];
-      if (backgroundRuns.size > 0) {
-        lines.push("Active:");
-        for (const run of backgroundRuns.values()) {
-          // Freeze live frames so elapsed-dependent details don't drift in the listing.
-          const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
-          let icon: string;
-          let detail: string;
-          if (run.state === "failed") {
-            icon = "\u2717";
-            detail = snap.errorMessage || "unknown error";
-          } else if (run.state === "finished") {
-            icon = "\u2713";
-            detail = snap.summary || taskPreview(snap.output) || "(no output)";
-          } else if (run.state === "queued") {
-            icon = "\u23F8";
-            detail = "queued — waiting for a concurrency slot";
-          } else {
-            icon = "\u23F3";
-            detail = `running — ${describeCurrentActivity(snap)}`;
-          }
-          lines.push(`${icon} ${run.id} (${run.role}): ${detail}`);
+      lines.push("Runs:");
+      for (const run of backgroundRuns.values()) {
+        // Freeze live frames so elapsed-dependent details don't drift in the listing.
+        const snap = run.result ? run.snapshot : freezeFrame(run.snapshot);
+        let icon: string;
+        let detail: string;
+        if (run.state === "failed") {
+          icon = "\u2717";
+          detail = snap.errorMessage || "unknown error";
+        } else if (run.state === "finished") {
+          icon = "\u2713";
+          detail = snap.summary || taskPreview(snap.output) || "(no output)";
+        } else if (run.state === "queued") {
+          icon = "\u23F8";
+          detail = "queued — waiting for a concurrency slot";
+        } else {
+          icon = "\u23F3";
+          detail = `running — ${describeCurrentActivity(snap)}`;
         }
-      }
-      if (collectedRuns.size > 0) {
-        if (lines.length > 0) lines.push("");
-        lines.push("Collected (result already returned via subagent_check):");
-        for (const c of collectedRuns.values()) {
-          lines.push(`\u2713 ${c.id} (${c.role}): ${c.state} — "${c.task}"`);
-        }
+        lines.push(`${icon} ${run.id} (${run.role}): ${detail}`);
       }
       ctx.ui.notify(lines.join("\n"), "info");
     },
@@ -1023,13 +984,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
       }
 
       if (target !== "all" && !backgroundRuns.has(target)) {
-        const collected = collectedRuns.get(target);
         const active = [...backgroundRuns.values()].map((r) => `${r.id} (${r.role})`);
         ctx.ui.notify(
-          (collected
-            ? `${target} (${collected.role}) was already collected — nothing to cancel.`
-            : `Unknown subagent id: ${target}.`) +
-            ` Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
+          `Unknown subagent id: ${target}. Active: ${active.length > 0 ? active.join(", ") : "(none)"}.`,
           "error",
         );
         return;

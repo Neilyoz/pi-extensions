@@ -44,6 +44,7 @@ import {
   completionNoticeLines,
   formatToolCall,
   briefFilesUsed,
+  collectDeliveredIds,
 } from "./utils.ts";
 import type { ActivityEntry, SubagentResult, SubagentRole } from "./types.ts";
 
@@ -851,5 +852,42 @@ describe("briefFilesUsed", () => {
       { kind: "text", id: "text-0", status: "done", text: "hi" },
     ]);
     assert.equal(used.get(F1), false);
+  });
+});
+
+describe("collectDeliveredIds", () => {
+  const checkEntry = (id: string) => ({
+    type: "message",
+    message: { role: "toolResult", toolName: "subagent_check", details: { id, role: "worker" } },
+  });
+
+  test("collects ids from subagent_check tool results only", () => {
+    const entries = [
+      { type: "message", message: { role: "user", content: "hi" } },
+      { type: "message", message: { role: "assistant", content: [] } },
+      { type: "message", message: { role: "toolResult", toolName: "read", details: { id: "sub-9" } } },
+      { type: "message", message: { role: "toolResult", toolName: "subagent_wait", details: { entries: [] } } },
+      checkEntry("sub-1"),
+      { type: "message", message: { role: "custom", customType: "subagent-completion" } },
+      { type: "compaction" },
+    ];
+    assert.deepEqual(collectDeliveredIds(entries), new Set(["sub-1"]));
+  });
+
+  test("dedupes repeated checks of the same id", () => {
+    assert.deepEqual(collectDeliveredIds([checkEntry("sub-1"), checkEntry("sub-1")]), new Set(["sub-1"]));
+  });
+
+  test("empty path means nothing delivered (branch rewound past the check)", () => {
+    assert.equal(collectDeliveredIds([]).size, 0);
+  });
+
+  test("ignores malformed details", () => {
+    const entries = [
+      { type: "message", message: { role: "toolResult", toolName: "subagent_check" } },
+      { type: "message", message: { role: "toolResult", toolName: "subagent_check", details: {} } },
+      { type: "message", message: { role: "toolResult", toolName: "subagent_check", details: { id: 42 } } },
+    ];
+    assert.equal(collectDeliveredIds(entries).size, 0);
   });
 });

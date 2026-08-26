@@ -1,11 +1,13 @@
 /**
- * The model's inbox of unclaimed background subagent runs.
+ * The model's inbox of background subagent runs.
  *
  * Injected into the LLM context before every provider call via the `context`
- * event. The reminder lists every delegated run whose result has not been
- * claimed yet — queued, running, and finished/failed alike — so the model
- * cannot forget about them. `subagent_check` on a terminal run returns the
- * output AND removes the run from this list (read-once collection).
+ * event. The reminder lists every delegated run not yet delivered by a
+ * subagent_check on the active branch — queued, running, and
+ * finished/failed alike — so the model cannot forget about them. Delivery
+ * state is derived from the session tree (see collectDeliveredIds), not
+ * tracked in the registry: branching past a check re-arms the inbox,
+ * branching back silences it, and compaction un-delivers naturally.
  *
  * Cache discipline: the reminder is prepended to the FIRST user message, so
  * it sits at a stable position in the message prefix. Its content must stay
@@ -28,7 +30,7 @@ export interface InboxEntry {
 }
 
 const INBOX_HEADER =
-  "[background subagent runs — results are pull-only for the model: no completion notice wakes you. subagent_wait, then subagent_check to collect each run; a terminal check removes it from this list; runs missing here were already collected]";
+  "[background subagent runs — results are pull-only for the model: no completion notice wakes you. subagent_wait, then subagent_check to collect each run; a terminal check removes it from this list; runs missing here were already checked on this branch]";
 
 /** `42s`, `3m12s`, `4m` — whole seconds, no live clocks. */
 function formatDuration(totalSec: number): string {
@@ -61,12 +63,16 @@ function inboxStatus(entry: InboxEntry): string {
 
 /**
  * Build the inbox reminder text, or undefined when every delegated run has
- * been collected (nothing to remind about — inject nothing, keep the context
- * untouched and the provider cache fully stable).
+ * already been checked on the active branch (nothing to remind about —
+ * inject nothing, keep the context untouched and the provider cache fully
+ * stable). Queued/running runs are always listed regardless of delivery
+ * state — their result is not final yet, so a past check (of a live frame)
+ * never counts as delivered.
  */
-export function buildInboxReminder(entries: Iterable<InboxEntry>): string | undefined {
+export function buildInboxReminder(entries: Iterable<InboxEntry>, delivered: Set<string>): string | undefined {
   const rows: string[] = [];
   for (const entry of entries) {
+    if (entry.state !== "queued" && entry.state !== "running" && delivered.has(entry.id)) continue;
     rows.push(`- ${entry.id} (${entry.role}) — ${inboxStatus(entry)} — "${taskPreview(entry.task)}"`);
   }
   if (rows.length === 0) return undefined;

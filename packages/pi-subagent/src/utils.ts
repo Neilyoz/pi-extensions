@@ -638,9 +638,9 @@ export function formatCheckText(id: string, role: string, r: SubagentResult): st
 }
 
 /**
- * Cancel confirmation text: short, no output dump — the partial output is
- * check's job to return (read-once collection). Always points at check so
- * the now-failed registry entry (and its inbox-reminder line) gets cleared.
+ * Cancel confirmation text for the /subagent:cancel command: short, no output
+ * dump — the partial output is check's job to return. Always points at check
+ * so the user knows where the partial output lives.
  */
 /**
  * Compact stop summary shared by the cancel tool text and its TUI row:
@@ -657,8 +657,8 @@ export function cancelStopSummary(r: SubagentResult): string {
 
 /**
  * Cancel confirmation text: short, no output dump — the partial output is
- * check's job to return (read-once collection). Always points at check so
- * the now-cancelled registry entry (and its inbox-reminder line) gets cleared.
+ * check's job to return. Always points at check so the model fetches the
+ * partial output it is entitled to.
  */
 export function formatCancelText(id: string, role: string, r: SubagentResult): string {
   const head = `${id} (${role})`;
@@ -818,4 +818,41 @@ export function truncateOutput(t: string): string {
   const head = t.slice(0, 30_000);
   const tail = t.slice(-(MAX_OUTPUT_CHARS - 30_050));
   return `[Output truncated — ${t.length} chars total]\n\n${head}\n\n... [truncated] ...\n\n${tail}`;
+}
+
+// ── Session-tree delivery derivation ────────────────────────
+
+/**
+ * Minimal structural slice of a session entry — the only fields
+ * collectDeliveredIds reads. The real SessionEntry from
+ * ctx.sessionManager.buildContextEntries() satisfies this shape structurally;
+ * keeping it local preserves this module's zero pi-API-dependency rule and
+ * lets tests build plain fakes.
+ */
+interface SessionEntryLike {
+  type: string;
+  message?: {
+    role?: string;
+    toolName?: string;
+    details?: unknown;
+  };
+}
+
+/**
+ * Derive the set of background-run ids already delivered by subagent_check
+ * on the given session entries. The session tree is the single source of
+ * truth for delivery state: it is append-only and branch navigation rebuilds
+ * the active path, so branching past a check entry un-delivers (the inbox
+ * re-arms) while branching back re-delivers — no mirrored state to sync.
+ */
+export function collectDeliveredIds(entries: Iterable<SessionEntryLike>): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (!message || message.role !== "toolResult" || message.toolName !== "subagent_check") continue;
+    const id = (message.details as { id?: unknown } | undefined)?.id;
+    if (typeof id === "string" && id) ids.add(id);
+  }
+  return ids;
 }
