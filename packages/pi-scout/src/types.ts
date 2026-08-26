@@ -56,6 +56,8 @@ export interface SkillEntry {
   name: string;
   description: string;
   filePath: string;
+  /** Set when the skill's frontmatter disables model invocation — user-invoked only. */
+  userOnly?: boolean;
 }
 
 /**

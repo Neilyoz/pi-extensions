@@ -12,6 +12,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import type { ModelRolesAPI } from "@d3ara1n/pi-model-roles";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
 import type { ScoutConfig, ScoutContext, ScoutDecision, SkillEntry } from "./types.ts";
@@ -19,7 +21,7 @@ import { DEFAULT_CONFIG } from "./types.ts";
 import { loadScoutConfig } from "./config.ts";
 import { callSideAgent } from "./side-agent.ts";
 import { buildScoutSystemPrompt, buildScoutUserMessage } from "./scout-prompt.ts";
-import { resetSkillCache } from "./skill-inject.ts";
+import { resetSkillCache, toSkillEntries } from "./skill-inject.ts";
 import { evaluateShortCircuit } from "./short-circuit.ts";
 import { MODULES, emptyFields } from "./modules/registry.ts";
 import {
@@ -148,8 +150,56 @@ export default function scoutExtension(pi: ExtensionAPI) {
     name: "list_skills",
     label: "List all skills",
     description:
-      "List all available skills with name and description. Use this when the user asks what skills are installed or you need to discover skills beyond those currently active.",
+      'List all installed skills with name and description, including user-invoked-only skills hidden from the system prompt (marked "user-invoked only" — those load only via the /skill:name command, never automatically). Use this when the user asks what skills are installed or you need to discover skills beyond those currently active.',
     parameters: { type: "object", properties: {}, required: [] } as any,
+
+    // Call cell: tool name (the summary appears in the result cell).
+    renderCall(_args, theme) {
+      return new Text(theme.fg("toolTitle", theme.bold("list_skills")), 0, 0);
+    },
+
+    // Result cell: NO tool name (call already shows it). Collapsed = width-aware
+    // name summary; expanded = per-skill coloring from the structured details:
+    // name (accent), user-only marker (warning), description (muted).
+    renderResult(result, { expanded }, theme, context) {
+      const isError = context.isError;
+      const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+      const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+      const skills = (result.details as { skills: SkillEntry[] } | undefined)?.skills;
+
+      if (expanded) {
+        if (!skills || skills.length === 0) {
+          // No structured entries (error result, empty inventory) — dump text as-is.
+          const c = new Container();
+          for (const ln of text.split("\n")) c.addChild(new Text(ln, 0, 0));
+          return c;
+        }
+        const c = new Container();
+        c.addChild(new Text(theme.fg("text", `Installed skills (${skills.length}):`), 0, 0));
+        for (const s of skills) {
+          let line1 = theme.fg("accent", s.name);
+          if (s.userOnly) line1 += ` ${theme.fg("warning", "[user-invoked only]")}`;
+          c.addChild(new Text(`- ${line1}`, 0, 0));
+          c.addChild(new Text(`    ${theme.fg("muted", s.description || "(no description)")}`, 0, 0));
+        }
+        return c;
+      }
+      const names = skills?.map((s) => s.name) ?? [];
+      const styled =
+        names.length === 0
+          ? `${icon} ${text.split("\n")[0] ?? ""}`
+          : `${icon} ${theme.fg(
+              "dim",
+              names.length <= 5
+                ? names.join(", ")
+                : `${names.slice(0, 5).join(", ")} +${names.length - 5} more`,
+            )}`;
+      return {
+        render: (width: number) => [truncateToWidth(styled, width, "…", true)],
+        invalidate: () => {},
+      } satisfies Component;
+    },
+
     async execute() {
       if (cachedAllSkills.length === 0) {
         return {
@@ -157,8 +207,14 @@ export default function scoutExtension(pi: ExtensionAPI) {
           details: undefined as any,
         };
       }
-      const lines = cachedAllSkills.map((s) => `- **${s.name}**: ${s.description}`);
-      return { content: [{ type: "text", text: lines.join("\n") }], details: undefined as any };
+      const lines = cachedAllSkills.map(
+        (s) =>
+          `- **${s.name}**: ${s.description}${s.userOnly ? " (user-invoked only)" : ""}`,
+      );
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: { skills: cachedAllSkills },
+      };
     },
   });
 
@@ -199,6 +255,13 @@ export default function scoutExtension(pi: ExtensionAPI) {
 
   // ── before_agent_start: core scout logic ────────────────────────
   pi.on("before_agent_start", async (event, ctx) => {
+    // Snapshot the full skill inventory (including user-only skills) for
+    // list_skills — active discovery works even when routing is off.
+    const allSkills = toSkillEntries(event.systemPromptOptions?.skills ?? []);
+    if (cachedAllSkills.length === 0 && allSkills.length > 0) {
+      cachedAllSkills = allSkills;
+    }
+
     if (!config.enabled) return;
     // Nothing to do if no routing module is enabled.
     if (!MODULES.some((m) => config.modules[m.key])) return;
@@ -217,21 +280,10 @@ export default function scoutExtension(pi: ExtensionAPI) {
 
     const theme = ctx.ui.theme;
 
-    // Skills available this turn — used by both the short-circuit layer
-    // and the side-agent path.
-    const skills = event.systemPromptOptions?.skills ?? [];
-    if (cachedAllSkills.length === 0 && skills.length > 0) {
-      cachedAllSkills = skills.map((s: any) => ({
-        name: s.name,
-        description: s.description ?? "",
-        filePath: s.filePath,
-      }));
-    }
-    const skillEntries: SkillEntry[] = skills.map((s: any) => ({
-      name: s.name,
-      description: s.description ?? "",
-      filePath: s.filePath,
-    }));
+    // Router candidates exclude user-only skills (disable-model-invocation):
+    // invisible to the side agent, never injected into the main prompt.
+    // They remain visible to list_skills via cachedAllSkills.
+    const skillEntries: SkillEntry[] = allSkills.filter((s) => !s.userOnly);
 
     // Current main-model role (sync lookup — cheap).
     const currentModel = ctx.model;

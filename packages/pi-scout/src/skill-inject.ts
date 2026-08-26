@@ -9,6 +9,8 @@
  * This significantly reduces per-turn token usage for recurring skills.
  */
 
+import type { SkillEntry } from "./types.ts";
+
 /** Match pi's entire skills section: intro paragraph + XML block. */
 const SKILLS_SECTION_RE =
   /\n\nThe following skills provide specialized instructions[\s\S]*?<\/available_skills>/;
@@ -19,6 +21,33 @@ let shownSkills: Set<string> = new Set();
 /** Reset the cache — called on session_start. */
 export function resetSkillCache(): void {
   shownSkills = new Set();
+}
+
+/**
+ * Map pi's skill objects to scout entries, preserving the user-only flag.
+ *
+ * pi hides skills whose frontmatter sets `disable-model-invocation` from
+ * the system prompt — they are only invocable via `/skill:name`. Scout
+ * receives the unfiltered list via `systemPromptOptions.skills`; this mapper
+ * keeps the full inventory (for list_skills) and flags user-only skills so
+ * consumers can exclude them from routing candidates and main-prompt injection.
+ *
+ * @internal — exported for testing.
+ */
+export function toSkillEntries(
+  skills: Array<{
+    name: string;
+    description?: string;
+    filePath: string;
+    disableModelInvocation?: boolean;
+  }>,
+): SkillEntry[] {
+  return skills.map((s) => ({
+    name: s.name,
+    description: s.description ?? "",
+    filePath: s.filePath,
+    ...(s.disableModelInvocation ? { userOnly: true } : {}),
+  }));
 }
 
 /**
