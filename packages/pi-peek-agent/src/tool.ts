@@ -38,15 +38,16 @@ export function registerPeekTool(pi: ExtensionAPI): void {
     label: "Peek at another instance",
     description:
       "Peek at another pi instance — observe its session without disturbing it. " +
-      "The peer is never notified; the answer is drawn from what that instance has said and done so far. " +
-      "Use for checking progress, confirming details, or asking how something works. " +
+      "Read-only: a helper model answers from the peer's existing session record; the peer's agent is never involved and never learns you asked. " +
+      "Use for checking progress, confirming details, or understanding what a peer has said and done so far. " +
+      "Not for communication or coordination — the peer cannot see your question and cannot act on it. " +
       "Use mesh_list first to discover names.",
     promptSnippet: "Observe another pi instance's session without disturbing it",
 
     parameters: Type.Object({
       question: Type.String({
         description:
-          "What you want to find out about that instance's session (e.g. 'What are you working on right now?').",
+          "What you want to find out from the peer's existing session record (e.g. 'What is it working on right now?'). The peer's agent never sees this question.",
       }),
       at: Type.Optional(
         Type.String({
