@@ -33,7 +33,7 @@ const TEXT_MODELS: TextModelDef[] = [
     name: "Agnes 2.5 Flash",
     reasoning: true,
     contextWindow: 512_000,
-    maxTokens: 64_000,
+    maxTokens: 65_500,
   },
   {
     id: "agnes-2.0-flash",
