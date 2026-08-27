@@ -150,6 +150,12 @@ const roles: ModelRolesAPI = getModelRolesAPI();  // 完整类型推导
 
 功能改动时把教学加进当时最顺手的层，是 guidelines 逐句膨胀的根因；新增文案时先查另外三层是否已有。
 
+### Prompt 文案不得跨插件引用
+
+description / promptSnippet / promptGuidelines / 参数描述里不得提及**其他插件的工具、命令名**，除非它是本包声明的 extension 硬依赖（如 pi-mesh 之于其消费者，必然在场）。“only / the only way” 类绝对化声明同理禁止——它只在当前插件集合内成立，用户可以装第三方插件提供同类能力，不是 pi 的事实。
+
+**原因：组合性。** 用户可能只装其中一个、或装竞品替代——没装时是幽灵引用，装了竞品时是误导。两个工具的边界引导靠各自把自身语义写准（如 read-only、对方无感知 vs 进入对方对话流、可行动），语义差自然涌现，不需要互相指名。
+
 ### README 与依赖文档规范
 
 **每个包 README 必须包含 `## Installation` 和 `## Dependencies`。** 即使是只给其他插件消费的基础设施扩展（不注册 tool/command，只注册 hook），也要有 Install 段告诉用户如何加载。
