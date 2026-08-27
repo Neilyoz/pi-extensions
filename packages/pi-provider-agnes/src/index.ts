@@ -29,6 +29,13 @@ interface TextModelDef {
 
 const TEXT_MODELS: TextModelDef[] = [
   {
+    id: "agnes-2.5-flash",
+    name: "Agnes 2.5 Flash",
+    reasoning: true,
+    contextWindow: 512_000,
+    maxTokens: 65_500,
+  },
+  {
     id: "agnes-2.0-flash",
     name: "Agnes 2.0 Flash",
     reasoning: true,
