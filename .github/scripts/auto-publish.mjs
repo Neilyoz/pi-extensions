@@ -182,7 +182,7 @@ for (const dir of packageDirs) {
 
     // A commit targets a package if any comma-separated scope matches the package dir.
     // Unscoped commits match nothing — they never trigger a publish.
-    if (!parsed.scope.split(",").map((s) => s.trim()).includes(dir)) continue;
+    if (!parsed.scope?.split(",").map((s) => s.trim()).includes(dir)) continue;
 
     const isRelevantType = ["feat", "fix"].includes(parsed.type);
     if (!isRelevantType) continue;
