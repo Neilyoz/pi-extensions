@@ -19,6 +19,14 @@ This means:
 
 > This design currently focuses on single-task delegation rather than chain pipelines or context-forking — those patterns fit better when subagents act as advisors (planner, oracle) rather than executors.
 
+## Model Compatibility
+
+Observations on how main models behave with this plugin, one family per subsection. Subagent role models are configured separately via [pi-model-roles](../pi-model-roles); the notes below concern the **main model** — the orchestrator that decides when to delegate.
+
+### GPT family
+
+**Not recommended.** As of GPT 5.6, GPT models delegate pathologically: they abandon built-in tools (`read`, `edit`, `write`) and MCP entirely and route everything through subagents — `explorer` to read files, `worker` to modify them, `reviewer` to verify each change, then worker → reviewer → worker correction loops over and over. Every task a direct handful of tool calls would finish turns into a long delegate chain, wasting large amounts of time and tokens. Use a main model that treats direct tool calls as the default and delegation as the exception.
+
 ## How it works
 
 1. Main model calls the `subagent_delegate` tool with a role and task description
