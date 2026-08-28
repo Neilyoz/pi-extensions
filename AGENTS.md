@@ -204,6 +204,8 @@ Or add to `~/.pi/agent/settings.json`:
 - **纯库自身 README**：Installation 使用 `npm install`，并明确说明它不是 standalone pi extension
 - **可选 extension 依赖**：不放进主安装命令，单独说明如何安装和启用
 
+**Model Compatibility 章节（可选）：** 插件实测出模型相关行为差异时，写入 `## Model Compatibility` 章节——每个模型家族一个 `###` 子节（如 `### GPT family`），章节引言注明观察对象是主模型。位置靠前（简介/设计理念之后），属于安装前选型信息。**没有真实观察就整节约去，不写占位文案。**
+
 ### 语言规范：面向社区的内容必须英文
 
 本仓库是全英文开源项目。**面向社区/国际读者的产物必须英文**；仅本地/内部的产物可中文。
