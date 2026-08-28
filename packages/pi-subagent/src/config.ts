@@ -12,6 +12,12 @@ import type { SubagentConfig } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { normalizeNonNegativeInteger, normalizeNonNegativeNumber } from "./utils.ts";
 
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
 function readSettingsFile(filePath: string): any {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
@@ -39,6 +45,7 @@ export function loadSubagentConfig(cwd?: string): SubagentConfig {
 
   const rawSummary = raw?.summary;
   const rawHistory = raw?.history;
+  const rawInheritance = raw?.inheritance;
   return {
     maxConcurrency: normalizeNonNegativeInteger(raw.maxConcurrency, DEFAULT_CONFIG.maxConcurrency),
     maxDepth: normalizeNonNegativeInteger(raw.maxDepth, DEFAULT_CONFIG.maxDepth),
@@ -50,6 +57,12 @@ export function loadSubagentConfig(cwd?: string): SubagentConfig {
     summary: {
       role: rawSummary?.role ?? DEFAULT_CONFIG.summary.role,
       enabled: rawSummary?.enabled ?? DEFAULT_CONFIG.summary.enabled,
+    },
+    inheritance: {
+      maxChars: normalizePositiveInteger(
+        rawInheritance?.maxChars,
+        DEFAULT_CONFIG.inheritance.maxChars,
+      ),
     },
     agentOverrides: raw.agentOverrides ?? {},
   };

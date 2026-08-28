@@ -43,6 +43,19 @@ afterEach(() => {
 });
 
 describe("loadSubagentConfig", () => {
+  test("uses the inheritance default and accepts only positive finite integer maxChars", () => {
+    const { agentDir } = makeRoot();
+    writeSettings(agentDir, { subagent: { inheritance: { maxChars: 12 } } });
+    assert.equal(loadSubagentConfig().inheritance.maxChars, 12);
+
+    for (const maxChars of [0, -1, 0.5, 12.9, "500", false, null]) {
+      writeSettings(agentDir, { subagent: { inheritance: { maxChars } } });
+      assert.equal(loadSubagentConfig().inheritance.maxChars, DEFAULT_CONFIG.inheritance.maxChars);
+    }
+    writeSettingsText(agentDir, '{"subagent":{"inheritance":{"maxChars":1e999}}}');
+    assert.equal(loadSubagentConfig().inheritance.maxChars, DEFAULT_CONFIG.inheritance.maxChars);
+  });
+
   test("preserves zero limits and clamps negative numeric limits to unlimited", () => {
     const { agentDir } = makeRoot();
     writeSettings(agentDir, {
@@ -99,6 +112,7 @@ describe("loadSubagentConfig", () => {
         maxCost: 5,
         history: { enabled: false },
         summary: { enabled: false, role: "global-summary" },
+        inheritance: { maxChars: 1234 },
         agentOverrides: { global: { disabled: true } },
       },
     });
@@ -112,7 +126,11 @@ describe("loadSubagentConfig", () => {
     assert.equal(config.maxTurns, DEFAULT_CONFIG.maxTurns);
     assert.equal(config.maxCost, DEFAULT_CONFIG.maxCost);
     assert.deepEqual(config.history, DEFAULT_CONFIG.history);
-    assert.deepEqual(config.summary, { enabled: DEFAULT_CONFIG.summary.enabled, role: "project-summary" });
+    assert.deepEqual(config.summary, {
+      enabled: DEFAULT_CONFIG.summary.enabled,
+      role: "project-summary",
+    });
+    assert.deepEqual(config.inheritance, DEFAULT_CONFIG.inheritance);
     assert.deepEqual(config.agentOverrides, {});
   });
 });

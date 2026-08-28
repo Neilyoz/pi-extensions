@@ -15,6 +15,8 @@ export interface SubagentConfig {
   /** Persist every spawned delegate run (finished/failed/aborted alike) to ~/.pi/subagent/history/{sessionId}/{toolCallId}.json for auditing. Pre-run failures that never spawned are not recorded. */
   history: SubagentHistoryConfig;
   summary: SubagentSummaryConfig;
+  /** Limits optional serialized parent-conversation inheritance. */
+  inheritance: SubagentInheritanceConfig;
   /**
    * Per-role overrides from settings.json. Keyed by role name.
    * - Override built-in roles: provide fields to merge.
@@ -32,6 +34,11 @@ export interface SubagentSummaryConfig {
   enabled: boolean;
 }
 
+export interface SubagentInheritanceConfig {
+  /** Maximum characters in the inherited-conversation body. */
+  maxChars: number;
+}
+
 export const DEFAULT_CONFIG: SubagentConfig = {
   maxConcurrency: 4,
   maxDepth: 3,
@@ -39,6 +46,7 @@ export const DEFAULT_CONFIG: SubagentConfig = {
   maxCost: 0,
   history: { enabled: true },
   summary: { role: "utility", enabled: true },
+  inheritance: { maxChars: 50_000 },
   agentOverrides: {},
 };
 
@@ -181,6 +189,12 @@ export interface SubagentResult {
   files?: string[];
   /** Extra context passed to delegate (params.context); used by the expanded view. */
   context?: string;
+  /** True when this run received a filtered parent-conversation snapshot. */
+  inheritConversation?: boolean;
+  /** Delivered inherited-conversation body size; safe metadata only, never the body itself. */
+  inheritedConversationChars?: number;
+  /** True when the inherited body was mechanically shortened to its configured limit. */
+  inheritedConversationTruncated?: boolean;
 }
 
 /** Snapshot of a failed first attempt that was retried on the fallback role. */
@@ -213,6 +227,9 @@ export interface BackgroundDelegateDetails {
   task: string;
   context?: string;
   files?: string[];
+  inheritConversation?: boolean;
+  inheritedConversationChars?: number;
+  inheritedConversationTruncated?: boolean;
 }
 
 /** One watched run inside a wait/check view. */

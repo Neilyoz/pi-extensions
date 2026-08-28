@@ -15,6 +15,7 @@ import {
   contentText,
   ensureElapsedTimer,
   formatFallback,
+  formatInheritedConversationInput,
   formatThinking,
   formatTimePart,
   formatToolCall,
@@ -35,7 +36,13 @@ type RenderResultFn = NonNullable<ToolDefinition["renderResult"]>;
 
 export const renderDelegateCall: RenderCallFn = (args, theme, _context) => {
   const roleName = (args as any).role || "...";
-  const text = theme.fg("toolTitle", theme.bold("subagent_delegate ")) + theme.fg("accent", roleName);
+  const inheritance = (args as any).inheritConversation
+    ? theme.fg("dim", " (inherits conversation)")
+    : "";
+  const text =
+    theme.fg("toolTitle", theme.bold("subagent_delegate ")) +
+    theme.fg("accent", roleName) +
+    inheritance;
   return new Text(text, 0, 0);
 };
 
@@ -104,8 +111,8 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
       container.addChild(new Text(fallbackLine, 0, 0));
     }
 
-    // Input block: reference files + context char count + task full text,
-    // grouped without inner spacing (they are all subagent input).
+    // Input block: reference files + context/inherited-conversation metadata
+    // + task full text, grouped without inner spacing (all subagent input).
     container.addChild(new Spacer(1));
     if (r.files) {
       for (const f of r.files) {
@@ -114,6 +121,21 @@ export const renderDelegateResult: RenderResultFn = (result, { expanded }, theme
     }
     if (r.context) {
       container.addChild(new Text(theme.fg("dim", `ctx ${r.context.length} chars`), 0, 0));
+    }
+    if (r.inheritConversation) {
+      container.addChild(
+        new Text(
+          theme.fg(
+            "dim",
+            formatInheritedConversationInput(
+              r.inheritedConversationChars ?? 0,
+              r.inheritedConversationTruncated === true,
+            ),
+          ),
+          0,
+          0,
+        ),
+      );
     }
     container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
 

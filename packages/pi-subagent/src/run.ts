@@ -48,6 +48,9 @@ export interface RunHandle {
   readonly task: string;
   readonly context?: string;
   readonly files?: string[];
+  readonly inheritConversation?: boolean;
+  readonly inheritedConversationChars?: number;
+  readonly inheritedConversationTruncated?: boolean;
   /** Lifecycle state, kept in sync with the latest snapshot frame. */
   readonly state: RunState;
   /** Latest frame: queued placeholder, live progress, or terminal result. */
@@ -76,6 +79,12 @@ export interface StartRunOptions {
   task: string;
   context?: string;
   files?: string[];
+  /** Opt in to a text-only snapshot of the parent's active conversation. */
+  inheritConversation?: boolean;
+  /** Immutable serialized parent-conversation body; never persisted to history. */
+  inheritedConversation?: string;
+  /** Whether maxChars shortened the serialized parent conversation. */
+  inheritedConversationTruncated?: boolean;
   cwd: string;
   /** Nesting depth for the child (CURRENT_DEPTH + 1). */
   depth: number;
@@ -98,6 +107,13 @@ export interface StartRunOptions {
 export function startSubagentRun(opts: StartRunOptions): RunHandle {
   const spawn = opts.spawnImpl ?? spawnSubagent;
   const listeners = new Set<() => void>();
+  const inheritanceMetadata = opts.inheritConversation
+    ? {
+        inheritConversation: true as const,
+        inheritedConversationChars: opts.inheritedConversation?.length ?? 0,
+        inheritedConversationTruncated: opts.inheritedConversationTruncated ?? false,
+      }
+    : {};
 
   const inputFrame = (exitCode: number, queued: boolean): SubagentResult => ({
     role: opts.role,
@@ -110,6 +126,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
     activityLog: [],
     files: opts.files,
     context: opts.context,
+    ...inheritanceMetadata,
   });
 
   let currentState: RunState = "queued";
@@ -163,6 +180,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
     task: opts.task,
     context: opts.context,
     files: opts.files,
+    ...inheritanceMetadata,
     get state() {
       return currentState;
     },
@@ -198,8 +216,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
     try {
       await opts.gate.acquire(controller.signal);
     } catch {
-      const msg =
-        "still queued for a concurrency slot" + (abortReason ? ` (${abortReason})` : "");
+      const msg = "still queued for a concurrency slot" + (abortReason ? ` (${abortReason})` : "");
       finish(
         { ...inputFrame(1, false), stopReason: "cancelled", errorMessage: msg },
         new Error(msg),
@@ -279,9 +296,11 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         pauseStart: partial.pauseStart,
         files: opts.files,
         context: opts.context,
+        ...inheritanceMetadata,
         fallbackFrom: activeFallbackFrom,
       });
-      const emitProgress = (partial: Partial<SubagentResult>) => setFrame(liveFrame(partial), "running");
+      const emitProgress = (partial: Partial<SubagentResult>) =>
+        setFrame(liveFrame(partial), "running");
 
       // Running placeholder now that we hold a slot.
       setFrame(liveFrame({}), "running");
@@ -294,6 +313,8 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         systemPrompt: opts.roleDef.systemPrompt,
         context: opts.context,
         contextFiles: opts.files,
+        inheritConversation: opts.inheritConversation,
+        inheritedConversation: opts.inheritedConversation,
         subagentRoles: opts.roleDef.subagentRoles,
         timeoutMs: timeoutBudgetMs,
         maxTurns,
@@ -330,6 +351,8 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
             systemPrompt: opts.roleDef.systemPrompt,
             context: opts.context,
             contextFiles: opts.files,
+            inheritConversation: opts.inheritConversation,
+            inheritedConversation: opts.inheritedConversation,
             subagentRoles: opts.roleDef.subagentRoles,
             timeoutMs: timeoutBudgetMs,
             maxTurns,
@@ -351,6 +374,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
       runResult.role = opts.role;
       runResult.files = opts.files;
       runResult.context = opts.context;
+      Object.assign(runResult, inheritanceMetadata);
       runResult.elapsedMs = Date.now() - startTime;
 
       // Compress/truncate oversized output before it reaches the main model or TUI.
@@ -398,9 +422,7 @@ export function startSubagentRun(opts: StartRunOptions): RunHandle {
         activityLog: partial.activityLog,
         budgetMs: partial.budgetMs,
         elapsedMs: partial.startTime ? Date.now() - partial.startTime : undefined,
-        errorMessage: wasCancelled
-          ? abortReason || "cancelled"
-          : err?.message || String(err),
+        errorMessage: wasCancelled ? abortReason || "cancelled" : err?.message || String(err),
       };
       // The run spawned before throwing — audit it like any terminal state.
       // The partial output is raw (compression never ran on it).

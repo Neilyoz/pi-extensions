@@ -17,7 +17,7 @@ describe("composeInitialMessage", () => {
     try {
       const fileA = path.join(dir, "a.md");
       fs.writeFileSync(fileA, "alpha content");
-      const message = await composeInitialMessage([fileA], "some ctx", "do the thing");
+      const message = await composeInitialMessage([fileA], undefined, "some ctx", "do the thing");
       assert.equal(
         message,
         `<file name="${fileA}">\nalpha content\n</file>\n\n<context>\nsome ctx\n</context>\n\n<task>\ndo the thing\n</task>`,
@@ -28,23 +28,39 @@ describe("composeInitialMessage", () => {
   });
 
   test("omits absent channels and preserves relative block order", async () => {
-    const message = await composeInitialMessage(undefined, undefined, "only a task");
+    const message = await composeInitialMessage(undefined, undefined, undefined, "only a task");
     assert.equal(message, "<task>\nonly a task\n</task>");
-    const ctxOnly = await composeInitialMessage(undefined, "ctx body", "");
+    const ctxOnly = await composeInitialMessage(undefined, undefined, "ctx body", "");
     assert.equal(ctxOnly, "<context>\nctx body\n</context>");
   });
 
   test("unreadable files degrade to a placeholder instead of failing the run", async () => {
     const missing = path.join(os.tmpdir(), "pi-sub-test-does-not-exist.md");
-    const message = await composeInitialMessage([missing], undefined, "t");
+    const message = await composeInitialMessage([missing], undefined, undefined, "t");
     assert.match(message, /^\[?<file name="/);
     assert.match(message, /failed to read file/);
     assert.match(message, /\n\n<task>\nt\n<\/task>$/);
   });
 
   test("blank (whitespace-only) context is dropped", async () => {
-    const message = await composeInitialMessage(undefined, "   \n\t", "t");
+    const message = await composeInitialMessage(undefined, undefined, "   \n\t", "t");
     assert.equal(message, "<task>\nt\n</task>");
+  });
+
+  test("puts inherited conversation after files and before context/task", async () => {
+    const message = await composeInitialMessage(
+      ["missing.txt"],
+      "parent text",
+      "explicit ctx",
+      "delta task",
+    );
+    assert.ok(
+      message.indexOf('<file name="missing.txt">') < message.indexOf("<inherited_conversation>"),
+    );
+    assert.ok(message.indexOf("<inherited_conversation>") < message.indexOf("<context>"));
+    assert.ok(message.indexOf("<context>") < message.lastIndexOf("<task>"));
+    assert.match(message, /text-only background/i);
+    assert.match(message, /separate task block remains authoritative/);
   });
 });
 
@@ -92,12 +108,20 @@ describe("buildChildArgs", () => {
     assert.ok(!args.includes("--exclude-tools"));
   });
 
+  test("policy is conditional on conversation inheritance", () => {
+    const isolatedArgs = buildChildArgs("m", {}, "/t");
+    assert.deepEqual(buildChildArgs("m", { inheritConversation: false }, "/t"), isolatedArgs);
+    const isolated = isolatedArgs.join("\n");
+    const inherited = buildChildArgs("m", { inheritConversation: true }, "/t").join("\n");
+    assert.match(isolated, /you have NO prior conversation/);
+    assert.ok(!isolated.includes("<inherited_conversation> block"));
+    assert.match(inherited, /<inherited_conversation> block/);
+    assert.match(inherited, /may be compacted or truncated/);
+    assert.ok(!inherited.includes("you have NO prior conversation"));
+  });
+
   test("thinking and role system prompt are wrapped in their blocks", () => {
-    const args = buildChildArgs(
-      "m",
-      { thinking: "high", systemPrompt: "  Be brief.  " },
-      "/t",
-    );
+    const args = buildChildArgs("m", { thinking: "high", systemPrompt: "  Be brief.  " }, "/t");
     assert.equal(args[args.indexOf("--thinking") + 1], "high");
     const roleIdx = args.findIndex((a) => a.startsWith("<subagent_role>"));
     assert.ok(roleIdx > 0);

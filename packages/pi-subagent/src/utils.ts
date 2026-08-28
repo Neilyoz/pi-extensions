@@ -38,6 +38,12 @@ export function formatTokens(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
+/** Safe TUI label for inherited-conversation input; never includes transcript text. */
+export function formatInheritedConversationInput(chars: number, truncated: boolean): string {
+  if (chars === 0) return "conversation inherited · empty";
+  return `conversation ${chars} chars${truncated ? " · truncated" : ""}`;
+}
+
 /**
  * Usage parts shared by the TUI stats line and the LLM usage footer.
  * `withCache` adds the cache-read/write and peak-context figures (TUI only —

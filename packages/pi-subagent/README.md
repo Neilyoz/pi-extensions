@@ -8,12 +8,12 @@ Provides a `subagent_delegate` tool that lets the main model offload tasks to sp
 
 **The main model is the decision maker; subagents are executors.**
 
-Your primary AI has the most complete context — it knows the full conversation history, project structure, and task at hand. Subagents are spawned with **clean, isolated contexts** to handle specific, well-defined tasks without polluting the main model's context window.
+Your primary AI has the most complete context — it knows the full conversation history, project structure, and task at hand. Subagents are isolated by default to handle specific, well-defined tasks without polluting the main model's context window. A caller can explicitly opt into a filtered, text-only snapshot of the active parent branch when a task genuinely depends on prior dialogue.
 
 This means:
 - **Subagents don't plan** — the main model decides what needs to be done and provides a clear task description
 - **Subagents don't orchestrate the overall plan** — the main model decides what to do and examines each result to pick the next move; nested delegation (worker → explorer) only offloads self-contained exploration/research inside one task
-- **Subagents don't inherit history** — they don't need the full conversation; just a precise task description
+- **Subagents are isolated by default** — give them a precise, self-contained task; use `inheritConversation` only when prior dialogue is necessary
 - **Multiple subagents can run in parallel** — emit multiple `subagent_delegate` calls in one turn; pi executes them concurrently
 - **Subagents can nest subagents** — a `worker` can delegate exploration to `explorer` without returning to the main model
 
@@ -23,7 +23,7 @@ This means:
 
 1. Main model calls the `subagent_delegate` tool with a role and task description
 2. The extension resolves the role to a model via pi-model-roles
-3. Spawns an isolated pi child process in RPC mode (`--mode rpc`) with the configured model, tools, and system prompt — agent events stream back over stdout while stdin carries the initial prompt and mid-run steering commands. Children are headless: interactive extension dialogs (`ctx.ui.select/confirm/input`) are answered automatically with `cancelled` (standard "user declined" semantics), so an extension that asks never hangs the run
+3. Spawns a pi child process in RPC mode (`--mode rpc`, always without a reused parent session) with the configured model, tools, and system prompt. It is isolated by default; `inheritConversation: true` adds a filtered parent-branch snapshot to its initial stdin prompt. Agent events stream back over stdout while stdin carries the initial prompt and mid-run steering commands. Children are headless: interactive extension dialogs (`ctx.ui.select/confirm/input`) are answered automatically with `cancelled` (standard "user declined" semantics), so an extension that asks never hangs the run
 4. **Real-time TUI progress** shows tool calls, turns, and elapsed time as the subagent runs
 5. After completion, an **AI-generated one-line summary** is produced for compact display
 6. Returns the result to the main model with usage statistics (turns, tokens, cost)
@@ -45,7 +45,7 @@ This means:
 
 ## TUI Display
 
-- **During execution**: the task's first line with a ⏳ (or ⏸ queued) indicator, a live stream of thinking blocks and tool calls (latest 5 collapsed, everything expanded), and a usage line (elapsed/budget time, turns, tokens, peak context, cost, model)
+- **During execution**: the task's first line with a ⏳ (or ⏸ queued) indicator, a live stream of thinking blocks and tool calls (latest 5 collapsed, everything expanded), and a usage line (elapsed/budget time, turns, tokens, peak context, cost, model). Delegates using inherited conversation are marked in the tool-call title.
 - **Collapsed result**: the task's first line, then `✓` + the AI-generated summary (or the first line of the output), then the usage line — no activity replay
 - **Expanded result** (Ctrl+O): reference files, context size, the full task, the complete activity stream, the final output as rendered Markdown, and usage details
 - **Fallback trace**: when a provider error (429, quota, timeout, ...) kills a run and it is retried on the role's `fallbackRole`, a `⚠ fallback: first attempt <model> failed (<reason>)` line appears in both views — also while the retry is running (see [Fallback observability](#fallback-observability))
@@ -65,7 +65,7 @@ A centered overlay covering most of the screen. A tab row across the top lists e
 
 The **activity page** (default) is the run's live feed: a continuous, append-only list where each entry is static text with a state icon, and the only animated thing is the ellipsis on a running entry (`.` → `..` → `...`). Finishing freezes an entry in place — its position never changes, only the icon flips. Streamed assistant text grows in place as the run's last line and settles into plain terminal-colored text at the turn boundary. The feed is scrollable (`↑↓`, `PgUp/PgDn`, `Home`/`End`): the view pins to the end and auto-follows new entries; scrolling up unpins (a `⋮ N earlier` marker appears), and reaching the bottom again re-pins. Both foreground and background runs appear here; a foreground run stays listed while its delegate call blocks the main agent. A run leaves the view once its result is in the conversation — when the last one goes, the overlay shows a centered empty notice (with `Esc close` hinted) rather than shrinking away.
 
-The **brief page** shows the run's inputs and vitals at full width: the task and context verbatim (wrapped; head+tail elided beyond 20k chars), the reference file list annotated with `✓`/`·` for whether the child's tool calls actually touched each file, usage and time stats, the fallback trace, and a stderr tail on failures.
+The **brief page** shows the run's inputs and vitals at full width: the task and context verbatim (wrapped; head+tail elided beyond 20k chars), inherited-conversation size and truncation status when enabled (never its text), the reference file list annotated with `✓`/`·` for whether the child's tool calls actually touched each file, usage and time stats, the fallback trace, and a stderr tail on failures.
 
 Steer input is modal so keys never conflict with typing: in browse mode `s` opens the editor, `Enter` queues the message into the focused run (only while it is running) and returns to browse, `Esc` cancels and clears. The message appears immediately in the feed as an `↩ steer:` entry and is delivered to the child after its current tool batch, before its next LLM call — the run keeps its progress. `Esc` in browse mode closes the overlay.
 
@@ -108,16 +108,19 @@ Edit `~/.pi/agent/settings.json`:
     "summary": {
       "role": "utility",
       "enabled": true
+    },
+    "inheritance": {
+      "maxChars": 50000
     }
   }
 }
 ```
 
-All fields are optional. Defaults: `maxConcurrency: 4`, `maxDepth: 3`, `maxTurns: 0` (unlimited), `maxCost: 0` (unlimited), `history.enabled: true`, `summary.role: "utility"`, `summary.enabled: true`.
+All fields are optional. Defaults: `maxConcurrency: 4`, `maxDepth: 3`, `maxTurns: 0` (unlimited), `maxCost: 0` (unlimited), `history.enabled: true`, `summary.role: "utility"`, `summary.enabled: true`, and `inheritance.maxChars: 50000`.
 
 Timeouts are defined per role. Built-in defaults are `explorer: 900`, `reviewer: 3600`, `worker: 2400`, and `researcher: 2400` seconds. The timeout is active time — the clock pauses while the child is inside a nested `subagent_delegate` call, so delegate-capable roles need no extra headroom.
 
-All numeric limits accept `0` for unlimited: `maxConcurrency`, `maxDepth`, `maxTurns`, `maxCost`, and per-role `timeout`. Negative values are normalized to `0`; non-numeric or non-finite values fall back to their defaults. `maxConcurrency: 0` runs delegates without queuing, and `maxDepth: 0` permits unrestricted nesting.
+`maxConcurrency`, `maxDepth`, `maxTurns`, `maxCost`, and per-role `timeout` accept `0` for unlimited. Negative values are normalized to `0`; non-numeric or non-finite values fall back to their defaults. `inheritance.maxChars` is different: it must be a positive finite integer, and zero, negative, invalid, or non-finite values use the default. `maxConcurrency: 0` runs delegates without queuing, and `maxDepth: 0` permits unrestricted nesting.
 
 ### Agent Overrides
 
@@ -194,6 +197,26 @@ Delegate tasks that would generate many tool calls or verbose output to keep you
 ]
 ```
 
+### Inheriting parent conversation
+
+`inheritConversation` is opt-in and defaults to `false`. Use it when a delta task relies on the active parent dialogue and repeating that material would be impractical:
+
+```json
+{
+  "role": "worker",
+  "task": "Implement the approved approach and satisfy the acceptance checklist above.",
+  "inheritConversation": true
+}
+```
+
+At delegate execution, pi-subagent snapshots `buildContextEntries()` for the active branch. It serializes only compaction summaries, branch summaries, and text blocks from user and assistant messages. Thinking, images, tool calls and arguments, tool results, custom UI/state messages, bash messages, and model metadata are excluded. Newer compaction entries with a `retainedTail` are supported; older `firstKeptEntryId` compactions use the separately returned kept entries.
+
+The inherited body is mechanically limited by `inheritance.maxChars` (default 50,000). When it is too long, pi-subagent retains summary context and the newest dialogue, inserting an omission marker. No model call summarizes this input. The child receives it in an independent `<inherited_conversation>` block after `files` and before explicit `context` and `task`; the task remains authoritative. Inherited conversation can be incomplete, so the child must report missing material rather than guess.
+
+The tool-call title marks inherited runs. Expanded delegate input and `/subagent:view`'s brief page show the delivered character count plus `truncated` when applicable, next to the other input metadata; an enabled snapshot with no eligible text is shown as empty. The inherited body is never rendered or written to subagent history. History records only the safe inheritance flag, character count, and truncation status.
+
+Keep the default isolated mode for focused work. Without inheritance, `task`, `context`, and `files` must be self-contained.
+
 ## Background Delegation
 
 Three execution properties, kept separate:
@@ -254,7 +277,7 @@ Queued steers are visible in neither wait nor check results — they shape the r
 
 Each tool row renders one aspect of the same decomposition the foreground row shows all at once (input · process · result · usage):
 
-- **Background subagent_delegate row = input only.** Collapsed: `▶ sub-1 <task first line>`. Expanded: plus `@file` references, context size, and the full task text. Static — the run progresses invisibly until a subagent_wait/subagent_check row picks it up.
+- **Background subagent_delegate row = input only.** Collapsed: `▶ sub-1 <task first line>`. Expanded: plus `@file` references, context size, inherited-conversation size/truncation metadata when enabled, and the full task text. Static — the run progresses invisibly until a subagent_wait/subagent_check row picks it up.
 - **subagent_wait row = process + usage.** The input line shows the id list (or `(all)`) plus the timeout ceiling (`≤30s`) when one was given. One block per watched run: status line (`⏸ queued / ⏳ running` + id + task preview; bare, icon-free once terminal), a live activity stream (collapsed keeps the latest 5 items with a leading ellipsis; expanded shows everything) and a ticking usage bar. Once a run finishes, its process stream is replaced by a **status-only** result line (`✓ finished` / `⏲ budget-exceeded with the reason` / `⏱ timed out` / `⏹ cancelled with the reason` / `✗ <reason>`) — the output itself never appears in a subagent_wait row; expanded keeps the full process stream instead. A timed-out wait freezes the view.
 - **subagent_check row = the result view.** Same block shape as subagent_wait's single-run view (no id — there is only one), but the result line shows `✓ <AI summary>` (or the budget/failure reason when the run stopped early) and the expanded view renders the **full output** — subagent_check is where the conclusion lives.
 - **subagent_cancel row = confirmation only.** Collapsed: `⏹ sub-1 (worker): cancelled after 1 turn (~29s)` (or `• sub-1 (worker) already finished — nothing to cancel` for a no-op). Expanded adds the reason and the pointer to `subagent_check` — the partial output **never renders here**; it stays in the registry until a check row fetches it (layer contract: delegate = input, wait = process, cancel = intervention, check = result).

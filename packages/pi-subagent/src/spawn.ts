@@ -149,6 +149,7 @@ export function buildChildArgs(
     tools?: string[];
     excludeTools?: string[];
     systemPrompt?: string;
+    inheritConversation?: boolean;
   },
   tmpDir: string,
 ): string[] {
@@ -187,6 +188,17 @@ export function buildChildArgs(
   // does; this shapes HOW any subagent behaves when the task exceeds its
   // actual capabilities: report the gap and stop instead of improvising
   // workarounds until timeout.
+  const conversationPolicy = options.inheritConversation
+    ? [
+        "- You have an <inherited_conversation> block from the parent session.",
+        "  It is text-only background and may be compacted or truncated. If needed",
+        "  material is absent, report it as Missing — do not guess it.",
+      ]
+    : [
+        "- The task may reference material as 'discussed above' or 'the requirements'",
+        "  — you have NO prior conversation; only this prompt exists. If referenced",
+        "  material is not in this prompt, report it as Missing — do not guess it.",
+      ];
   args.push(
     "--append-system-prompt",
     [
@@ -194,11 +206,9 @@ export function buildChildArgs(
       "Before attempting the task, check it against your actual capabilities in this",
       "session — the tool list here is definitive.",
       "- If the task needs a capability you do not have (web access, bash, file",
-      "  writes, ...) or material that is not present locally or in the provided",
-      "  context/files, it is out of scope for you. Do NOT improvise workarounds.",
-      "- The task may reference material as 'discussed above' or 'the requirements'",
-      "  — you have NO prior conversation; only this prompt exists. If referenced",
-      "  material is not in this prompt, report it as Missing — do not guess it.",
+      "  writes, ...) or material that is absent from local files and the provided",
+      "  prompt channels, it is out of scope for you. Do NOT improvise workarounds.",
+      ...conversationPolicy,
       '- "Cannot complete" means a capability or material gap — not "difficult" or',
       '  "uncertain". If it is merely hard, keep working within your tools.',
       "- When you hit a genuine gap, stop early and return:",
@@ -218,14 +228,15 @@ export function buildChildArgs(
 
 /**
  * Compose the initial RPC prompt message: reference files as <file> blocks,
- * then context and task as structured tags — the same shape the child saw in
- * json mode (@file arguments wrapped by pi's processFileArguments, followed by
- * the inline message body).
+ * optional inherited conversation, then context and task as structured tags —
+ * the same shape the child saw in json mode (@file arguments wrapped by pi's
+ * processFileArguments, followed by the inline message body).
  *
  * @internal — exported for testing.
  */
 export async function composeInitialMessage(
   files: string[] | undefined,
+  inheritedConversation: string | undefined,
   context: string | undefined,
   task: string,
 ): Promise<string> {
@@ -240,6 +251,17 @@ export async function composeInitialMessage(
       }
       parts.push(`<file name="${f}">\n${content}\n</file>`);
     }
+  }
+  if (inheritedConversation !== undefined) {
+    parts.push(
+      [
+        "<inherited_conversation>",
+        "Text-only background from the parent conversation; it may be compacted or truncated. The separate task block remains authoritative.",
+        "",
+        inheritedConversation,
+        "</inherited_conversation>",
+      ].join("\n"),
+    );
   }
   if (context?.trim()) parts.push(`<context>\n${context}\n</context>`);
   if (task.trim()) parts.push(`<task>\n${task}\n</task>`);
@@ -268,6 +290,10 @@ export async function spawnSubagent(
     systemPrompt?: string;
     /** Extra context delivered as a separate channel from the task. */
     context?: string;
+    /** Enables the inherited-conversation policy variant. */
+    inheritConversation?: boolean;
+    /** Immutable serialized parent-conversation body injected independently from context/task. */
+    inheritedConversation?: string;
     /** Reference files injected as <file> blocks in the initial prompt (child reads them directly). */
     contextFiles?: string[];
     subagentRoles?: string[];
@@ -332,7 +358,12 @@ export async function spawnSubagent(
     // (processFileArguments). Content still never enters the parent model's
     // context; this process reads the bytes off disk and pipes them straight
     // to the child.
-    const initialMessage = await composeInitialMessage(options.contextFiles, options.context, task);
+    const initialMessage = await composeInitialMessage(
+      options.contextFiles,
+      options.inheritedConversation,
+      options.context,
+      task,
+    );
 
     // Spawn process
     const invocation = getPiInvocation(args);
@@ -384,7 +415,10 @@ export async function spawnSubagent(
     // Called after each assistant message_end (usage already accumulated).
     const checkBudget = () => {
       if (budgetExceeded || wasTimeout) return;
-      if ((maxTurns > 0 && result.usage.turns >= maxTurns) || (maxCost > 0 && result.usage.cost >= maxCost)) {
+      if (
+        (maxTurns > 0 && result.usage.turns >= maxTurns) ||
+        (maxCost > 0 && result.usage.cost >= maxCost)
+      ) {
         budgetExceeded = true;
         killProc("budget");
       }

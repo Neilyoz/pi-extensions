@@ -15,8 +15,9 @@
  *    (a "⋮ N earlier" marker appears), reaching the bottom again (or End)
  *    re-pins.
  *  - brief: the run's inputs and vitals — task and context verbatim (wrapped;
- *    head+tail elided when huge), the reference file list annotated with ✓/·
- *    for whether the child's tool calls touched each file, usage and time
+ *    head+tail elided when huge), safe inherited-conversation size/truncation
+ *    metadata, the reference file list annotated with ✓/· for whether the
+ *    child's tool calls touched each file, usage and time
  *    stats, the fallback trace, and a stderr tail on failures.
  *
  * Steer input is modal so keys never conflict with the editor: browse mode
@@ -51,6 +52,7 @@ import type { ActivityEntry } from "./types.ts";
 import {
   briefFilesUsed,
   formatFallback,
+  formatInheritedConversationInput,
   formatThinking,
   formatTimePart,
   formatToolCall,
@@ -339,7 +341,8 @@ export class SubagentViewPanel implements Component, Focusable {
   }
 
   /** Render the brief page's full content (pre-scroll): task/context verbatim,
-   *  annotated file list, stats, fallback trace, failure stderr tail. */
+   *  inherited-conversation metadata, annotated files, stats, fallback trace,
+   *  and failure stderr tail. */
   private renderBriefLines(run: RunHandle, width: number, fg: Fg): string[] {
     const snap = run.snapshot;
     const lines: string[] = [];
@@ -359,6 +362,15 @@ export class SubagentViewPanel implements Component, Focusable {
     if (run.context) {
       section(`context · ${formatTokens(run.context.length)} chars`);
       body(run.context);
+    }
+
+    if (run.inheritConversation) {
+      section(
+        formatInheritedConversationInput(
+          run.inheritedConversationChars ?? 0,
+          run.inheritedConversationTruncated === true,
+        ),
+      );
     }
 
     if (run.files && run.files.length > 0) {

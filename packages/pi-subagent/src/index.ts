@@ -16,11 +16,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
-import type {
-  SubagentConfig,
-  SubagentResult,
-  SubagentRole,
-} from "./types.ts";
+import type { SubagentConfig, SubagentResult, SubagentRole } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { loadSubagentConfig } from "./config.ts";
 import { BUILTIN_ROLES } from "./roles.ts";
@@ -44,6 +40,7 @@ import {
 } from "./utils.ts";
 import { startSubagentRun, type RunHandle } from "./run.ts";
 import { buildInboxReminder, injectReminder } from "./reminder.ts";
+import { serializeInheritedConversation } from "./inheritance.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
 import { createViewPanel } from "./view.ts";
 import {
@@ -149,11 +146,13 @@ export default function subagentExtension(pi: ExtensionAPI) {
       "- Delegate ONLY when a task involves significant work (heavy analysis, multi-step investigation, large-scope changes) AND you only care about the conclusion, not intermediate steps. A good test: the task would clutter your context with 3+ turns of raw tool output.",
       "- DO NOT delegate simple tasks — a single read, a one-line edit, a basic grep, or straightforward changes touching 1-2 files. Just do them yourself; spawning a child process costs more than the task.",
       "",
-      "SELF-CONTAINED DELEGATION (subagents have NO memory of this conversation):",
+      "DELEGATION CONTEXT MODES:",
       "",
-      "- The child sees exactly three things: task, context, files — nothing else of this chat exists for it. Any requirement, decision, or constraint it must know has to be restated in those channels.",
-      "- Never write phantom references (\"as discussed above\", \"per the requirements\") — the child has never seen that material. Inline the actual content instead.",
-      "- The isolation is deliberate: don't dump your whole conversation either. Pass what the task needs and nothing more, so the child's judgment isn't steered by irrelevant history.",
+      "- Self-contained (default): when task, context, and files contain everything the child needs, omit inheritConversation. The child receives no parent dialogue.",
+      '- Conversation-relative: when the task is intentionally written as a delta against this chat — e.g. "implement the approved approach", "review the requirements above", or "continue from our discussion" — set inheritConversation: true.',
+      "- Never send a conversation-relative task without inheritConversation: true. Either enable inheritance or rewrite the task to be self-contained.",
+      "- With inheritance enabled, keep task focused on the work to perform; do not duplicate the conversation into context. Use context for additional non-conversation background and files for source material.",
+      "- Inherited history may be compacted or truncated. If an older detail is essential and may fall outside the retained history, include it explicitly in task or context.",
       "",
       "AVAILABLE ROLES:",
       ...entries.map(([name, role]) => `  - ${name}: ${role.description}`),
@@ -304,7 +303,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: "subagent_delegate",
     label: "Delegate to subagent",
     description:
-      "Delegate a task to a specialized subagent. By default the call blocks until the run finishes and returns the final output — intermediate tool output stays out of your context. With background: true it returns an id immediately and you collect the result later with subagent_wait/subagent_check. Subagents have no access to this conversation — everything they need must arrive through the parameters.",
+      "Delegate a task to a specialized subagent. By default the call blocks until the run finishes and returns the final output — intermediate tool output stays out of your context. With background: true it returns an id immediately and you collect the result later with subagent_wait/subagent_check. Subagents are isolated by default; inheritConversation optionally injects a filtered snapshot of the active parent branch.",
     promptSnippet: "Delegate tasks to specialized subagents",
     promptGuidelines: guidelines,
 
@@ -312,7 +311,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       role: Type.String({ description: "Subagent role to use" }),
       task: Type.String({
         description:
-          "The work to do — self-contained: the subagent cannot see this conversation, so restate any requirement or constraint it needs here or in `context`. Instructions only — background material belongs in `context`, reference file paths in `files`.",
+          "The work to do. Without conversation inheritance it must be self-contained, with every requirement or constraint restated here or in `context`; with inheritance it may be a delta against that history. Instructions only — background material belongs in `context`, reference file paths in `files`.",
       }),
       context: Type.Optional(
         Type.String({
@@ -324,6 +323,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
         Type.Array(Type.String(), {
           description:
             'Reference file paths for the subagent to read directly (e.g. ["src/auth.ts", "docs/api.md"]). Injected as @file attachments — content stays out of your context window. Prefer this over pasting file contents into context.',
+        }),
+      ),
+      inheritConversation: Type.Optional(
+        Type.Boolean({
+          description:
+            "Opt in to a text-only, compaction-aware snapshot of the active parent conversation. Omit or false for isolation; true lets task be a delta against inherited history, which may be filtered or truncated.",
         }),
       ),
       background: Type.Optional(
@@ -370,6 +375,13 @@ export default function subagentExtension(pi: ExtensionAPI) {
         );
       }
 
+      const inheritedConversation = params.inheritConversation
+        ? serializeInheritedConversation(
+            ctx.sessionManager.buildContextEntries(),
+            config.inheritance.maxChars,
+          )
+        : undefined;
+
       const run = startSubagentRun({
         id: `sub-${++runCounter}`,
         toolCallId: _toolCallId,
@@ -378,6 +390,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
         task: params.task,
         context: params.context,
         files: params.files,
+        inheritConversation: params.inheritConversation === true,
+        inheritedConversation: inheritedConversation?.text,
+        inheritedConversationTruncated: inheritedConversation?.truncated,
         cwd: params.cwd ?? ctx.cwd,
         depth: CURRENT_DEPTH + 1,
         // Foreground runs die with the tool call; background runs outlive the turn.
@@ -430,6 +445,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
             task: params.task,
             context: params.context,
             files: params.files,
+            inheritConversation: params.inheritConversation === true,
+            inheritedConversationChars: inheritedConversation?.text.length,
+            inheritedConversationTruncated: inheritedConversation?.truncated,
           },
         };
       }
@@ -765,7 +783,8 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
       // Terminal runs cannot be cancelled — point at check instead.
       if (run.state === "finished" || run.state === "failed") {
-        const what = run.state === "finished" ? "its result" : "the failure reason and partial output";
+        const what =
+          run.state === "finished" ? "its result" : "the failure reason and partial output";
         const text =
           `${params.id} (${run.role}) already ${run.state} — nothing to cancel. ` +
           `subagent_check(${params.id}) returns ${what}.`;
@@ -996,7 +1015,9 @@ export default function subagentExtension(pi: ExtensionAPI) {
       // reported as already-terminal instead of cancelled.
       const targets =
         target === "all"
-          ? [...backgroundRuns.values()].filter((r) => r.state === "queued" || r.state === "running")
+          ? [...backgroundRuns.values()].filter(
+              (r) => r.state === "queued" || r.state === "running",
+            )
           : [backgroundRuns.get(target)!];
       if (targets.length === 0) {
         ctx.ui.notify("No live background runs to cancel.", "info");

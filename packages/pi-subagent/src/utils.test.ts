@@ -21,6 +21,7 @@ import {
   previewArgs,
   truncateOutput,
   formatTokens,
+  formatInheritedConversationInput,
   formatUsageStats,
   effectiveTimeout,
   elapsedSeconds,
@@ -322,6 +323,18 @@ describe("truncateOutput", () => {
     assert.ok(r.includes("H"), "head preserved");
     assert.ok(r.includes("T"), "tail preserved");
     assert.ok(!r.includes("M"), "middle dropped");
+  });
+});
+
+// ── inherited-conversation input metadata ──
+describe("formatInheritedConversationInput", () => {
+  test("formats delivered chars, truncation, and empty inheritance", () => {
+    assert.equal(formatInheritedConversationInput(42, false), "conversation 42 chars");
+    assert.equal(
+      formatInheritedConversationInput(50_000, true),
+      "conversation 50000 chars · truncated",
+    );
+    assert.equal(formatInheritedConversationInput(0, false), "conversation inherited · empty");
   });
 });
 

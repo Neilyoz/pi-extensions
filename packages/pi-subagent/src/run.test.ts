@@ -167,7 +167,9 @@ test("spawned runs persist to history on every terminal path; pre-run failures d
       spawnImpl: async (_m, _t, options) => {
         options.onProgress?.({
           output: "partial",
-          activityLog: [{ kind: "toolCall", id: "t1", status: "running", toolName: "bash", args: {} }],
+          activityLog: [
+            { kind: "toolCall", id: "t1", status: "running", toolName: "bash", args: {} },
+          ],
         });
         throw new Error("Subagent was aborted");
       },
@@ -227,6 +229,54 @@ test("provider error on first attempt retries on the fallback role", async () =>
   assert.strictEqual(result.output, "fallback ok");
   assert.ok(result.fallbackFrom, "terminal result records the failed first attempt");
   assert.strictEqual(result.fallbackFrom.model, "test/model-fast");
+});
+
+test("forwards an immutable inherited conversation to first and fallback spawns", async () => {
+  const received: Array<{
+    model: string;
+    inheritConversation?: boolean;
+    inheritedConversation?: string;
+  }> = [];
+  const spawnImpl: SpawnImpl = async (model, _task, options) => {
+    received.push({
+      model,
+      inheritConversation: options.inheritConversation,
+      inheritedConversation: options.inheritedConversation,
+    });
+    return received.length === 1
+      ? makeResult({ exitCode: 1, errorMessage: "429 quota exceeded", stderr: "HTTP 429" })
+      : makeResult({ output: "fallback ok" });
+  };
+
+  const run = startSubagentRun(
+    makeDeps({
+      roleDef: { ...roleDef, fallbackRole: "default" },
+      inheritConversation: true,
+      inheritedConversation: "[user]\\nParent requirement",
+      inheritedConversationTruncated: true,
+      spawnImpl,
+    }),
+  );
+  const result = await run.promise;
+
+  assert.deepEqual(received, [
+    {
+      model: "test/model-fast",
+      inheritConversation: true,
+      inheritedConversation: "[user]\\nParent requirement",
+    },
+    {
+      model: "test/model-default",
+      inheritConversation: true,
+      inheritedConversation: "[user]\\nParent requirement",
+    },
+  ]);
+  assert.equal(run.inheritConversation, true);
+  assert.equal(run.inheritedConversationChars, "[user]\\nParent requirement".length);
+  assert.equal(run.inheritedConversationTruncated, true);
+  assert.equal(result.inheritConversation, true);
+  assert.equal(result.inheritedConversationChars, "[user]\\nParent requirement".length);
+  assert.equal(result.inheritedConversationTruncated, true);
 });
 
 test("prerun failure (roles api unavailable) becomes a failed run, not a throw", async () => {

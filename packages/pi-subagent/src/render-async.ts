@@ -47,6 +47,7 @@ import {
   deriveRunState,
   ensureElapsedTimer,
   formatFallback,
+  formatInheritedConversationInput,
   formatThinking,
   formatTimePart,
   formatToolCall,
@@ -283,10 +284,13 @@ export const renderCompletionNotice: MessageRenderer<CompletionNoticeDetails> = 
 
 export const renderBackgroundDelegateCall: RenderCallFn = (args, theme) => {
   const roleName = (args as any).role || "...";
+  const mode = (args as any).inheritConversation
+    ? " (background · inherits conversation)"
+    : " (background)";
   const text =
     theme.fg("toolTitle", theme.bold("subagent_delegate ")) +
     theme.fg("accent", roleName) +
-    theme.fg("dim", " (background)");
+    theme.fg("dim", mode);
   return new Text(text, 0, 0);
 };
 
@@ -302,7 +306,7 @@ export const renderBackgroundDelegateResult: RenderResultFn = (result, { expande
 
   if (!expanded) return collapsedText(summaryLine);
 
-  // Expanded: full input — reference files, context size, task text.
+  // Expanded: full input — reference files, context/inheritance metadata, task text.
   const container = new Container();
   container.addChild(new Text(summaryLine, 0, 0));
   container.addChild(new Spacer(1));
@@ -313,6 +317,21 @@ export const renderBackgroundDelegateResult: RenderResultFn = (result, { expande
   }
   if (details.context) {
     container.addChild(new Text(fg("dim", `ctx ${details.context.length} chars`), 0, 0));
+  }
+  if (details.inheritConversation) {
+    container.addChild(
+      new Text(
+        fg(
+          "dim",
+          formatInheritedConversationInput(
+            details.inheritedConversationChars ?? 0,
+            details.inheritedConversationTruncated === true,
+          ),
+        ),
+        0,
+        0,
+      ),
+    );
   }
   container.addChild(new Text(fg("dim", details.task), 0, 0));
   return container;
