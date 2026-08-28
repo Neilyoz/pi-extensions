@@ -13,16 +13,19 @@ SenseNova (商汤日日新) provider for [Pi Coding Agent](https://pi.dev) — r
 | Model | Reasoning | Input | Context | Max Output |
 |---|---|---|---|---|
 | `sensenova-6.7-flash-lite` | Yes | text, image | 256K | 64K |
+| `sensenova-6.8-flash-lite` | Yes | text, image | 256K | 64K |
 | `deepseek-v4-flash` | Yes | text | 1M | 64K |
+| `deepseek-v4-pro` | Yes | text | 1M | 384K |
 | `glm-5.2` | Yes | text | 1M | 128K |
+| `kimi-k3` | Yes | text, image | 1M | 1M |
 
-`sensenova-u1-fast` is intentionally not registered because it is an image-generation model served by a separate Images API, not Chat Completions.
+Image-generation models (`sensenova-u1-fast`, `sensenova-u1.5-lite`) are intentionally not registered — their output modality is image, not chat.
 
 This provider registers the chat models with:
 
 - **OpenAI-compatible chat/completions transport** via pi's built-in provider layer
 - **`system` role compatibility** (`supportsDeveloperRole: false`)
-- **Reasoning controls** via `reasoning_effort`; pi's `minimal` thinking level is omitted because SenseNova only accepts `low` / `medium` / `high` / `none`
+- **Reasoning controls** via `reasoning_effort`; pi's `minimal` thinking level is omitted because SenseNova chat models only accept `low` / `medium` / `high` / `none` (`kimi-k3` and `deepseek-v4-pro` validate more loosely but accept the same set)
 - **Tool calling and streaming usage** verified against the live API
 
 Other compatibility details such as overflow error text should be re-verified against the live API before changing compat flags; see [`PROVIDER.md`](../../PROVIDER.md).
